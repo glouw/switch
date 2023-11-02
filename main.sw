@@ -1,31 +1,32 @@
-let test(let x)
+let _fun()
 {
-    ret x;
+    ret -1;
 }
 
 let func()
 {
-    let x = 1;
+    let x = _fun();
+    let *array[16] = { &x };
     let *p = &x + (1 - 2);
     let *z = *&p;
-    let *X = *&p + ~z;
-    ~test() + 1;
-
-    if (1)
+    let test = x;
+    while(1)
     {
     }
-    elif (2)
+    if(1)
     {
     }
-    elif (3)
+    elif(2)
+    {
+    }
+    elif(3)
     {
     }
     else
     {
     }
-    while (1)
+    while(1)
     {
     }
-
     ret 0;
 }
