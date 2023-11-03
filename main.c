@@ -5,13 +5,25 @@
 #include <stdio.h>
 
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
-#define MAX_MAP_IDENTS (128)
-#define MAX_FUN_ARGS (8)
-#define MAX_STRING_CHARS (32)
+#define MAX_MAP_IDENTS (512)
+#define MAX_FUNCTION_ARGS (8)
+#define MAX_STRING_CHARS (64)
 
-char* TermOps[] = { "=", "==", "!=", "+", "-", "&", "^", "|", ">>", "<<", NULL };
-char* FactOps[] = { "*", "%", "/", NULL };
-char* Reserved[] = { "let", "while", "if", "elif", "else", "ret", NULL };
+char* TermOps[] = {
+    "=", "==", "!=", "<", ">", "<=", ">=", "+", "-", "&", "^", "|", NULL
+};
+
+char* FactOps[] = {
+    "*", "%", "/", NULL
+};
+
+char* UnaryOps[] = {
+    "$" /* print */, "~", "+", "-", "&", "*", "(", NULL
+};
+
+char* Reserved[] = {
+    "let", "while", "if", "elif", "else", "ret", NULL
+};
 
 typedef char String[MAX_STRING_CHARS];
 
@@ -59,7 +71,7 @@ int Next(int index)
     return (index + 1) % MAX_MAP_IDENTS;
 }
 
-int StringIn(char* string, char* strings[])
+int IsStringIn(char* string, char* strings[])
 {
     char** at;
     for(at = strings; *at; at++)
@@ -68,7 +80,7 @@ int StringIn(char* string, char* strings[])
     return 0;
 }
 
-int CharIn(int c, char* strings[])
+int IsCharIn(int c, char* strings[])
 {
     char** at;
     char* string;
@@ -83,7 +95,7 @@ Ident* Find(Map idents, char* name)
 {
     int i;
     int index;
-    assert(!StringIn(name, Reserved));
+    assert(!IsStringIn(name, Reserved));
     index = Index(name);
     for(i = 0; i < MAX_MAP_IDENTS; i++)
     {
@@ -123,29 +135,39 @@ void Delete(Map idents, char* name)
 
 int IsTermOp(char* op)
 {
-    return StringIn(op, TermOps);
+    return IsStringIn(op, TermOps);
 }
 
 int IsFactOp(char* op)
 {
-    return StringIn(op, FactOps);
+    return IsStringIn(op, FactOps);
 }
 
 int IsTermOpChar(int c)
 {
-    return CharIn(c, TermOps);
+    return IsCharIn(c, TermOps);
 }
 
 int IsFactOpChar(int c)
 {
-    return CharIn(c, FactOps);
+    return IsCharIn(c, FactOps);
+}
+
+int Read(FILE* file)
+{
+    int c = fgetc(file);
+    /* Python style comments */
+    if(c == '#')
+        while(c != '\n')
+            c = fgetc(file);
+    return c;
 }
 
 void Stream(FILE* file, int clause(int), String string)
 {
     int i = 0;
     char c;
-    while(clause(c = fgetc(file)))
+    while(clause(c = Read(file)))
     {
         assert(i < MAX_STRING_CHARS);
         /* No need to fill buffer with spaces */
@@ -165,7 +187,7 @@ void Space(FILE* file)
 int Peek(FILE* file)
 {
     Space(file);
-    return ungetc(fgetc(file), file);
+    return ungetc(Read(file), file);
 }
 
 void Alpha(FILE* file, String string)
@@ -207,7 +229,7 @@ void Match(FILE* file, char* with)
 {
     Space(file);
     while(*with)
-        assert(*with++ == fgetc(file));
+        assert(*with++ == Read(file));
 }
 
 Value Expression(FILE* file, Map idents);
@@ -258,11 +280,22 @@ Value Identifier(FILE* file, Map idents)
     return value;
 }
 
-Value Direct(FILE* file)
+Value Char(FILE* file)
 {
-    String digit;
     Value value = { 1, -1 };
-    Digit(file, digit);
+    Match(file, "'");
+    if(Peek(file) == '\\')
+        Match(file, "\\");
+    Read(file);
+    Match(file, "'");
+    return value;
+}
+
+Value Number(FILE* file)
+{
+    String number;
+    Value value = { 1, -1 };
+    Digit(file, number);
     return value;
 }
 
@@ -327,9 +360,20 @@ Value Inv(FILE* file, Map idents)
     return value;
 }
 
+Value Print(FILE* file, Map idents)
+{
+    Match(file, "$");
+    return Factor(file, idents);
+}
+
 Value Unary(FILE* file, Map idents)
 {
+    Value none = { 0 };
     int c = Peek(file);
+    assert(IsCharIn(c, UnaryOps));
+    if(c == '$')
+        return Print(file, idents);
+    else
     if(c == '~')
         return Inv(file, idents);
     else
@@ -347,15 +391,18 @@ Value Unary(FILE* file, Map idents)
     else
     if(c == '(')
         return Paren(file, idents);
-    else
-        assert(0 && "unknown unary operator");
+    assert(1 && "uncaught unary operator");
+    return none;
 }
 
 Value Factor(FILE* file, Map idents)
 {
     int c = Peek(file);
+    if(c == '\'')
+        return Char(file);
+    else
     if(isdigit(c))
-        return Direct(file);
+        return Number(file);
     else
     if(isalnumu(c))
         return Identifier(file, idents);
@@ -384,14 +431,6 @@ void Or(void)
 {
 }
 
-void ShiftR(void)
-{
-}
-
-void ShiftL(void)
-{
-}
-
 void Mul(void)
 {
 }
@@ -405,6 +444,30 @@ void Mod(void)
 }
 
 void Assign(void)
+{
+}
+
+void EqualTo(void)
+{
+}
+
+void NotEqualTo(void)
+{
+}
+
+void LessThan(void)
+{
+}
+
+void GreaterThan(void)
+{
+}
+
+void LessThanOrEqualTo(void)
+{
+}
+
+void GreaterThanOrEqualTo(void)
 {
 }
 
@@ -449,10 +512,40 @@ Value Expression(FILE* file, Map idents)
         }
         else
         if(Equal(op, "=="))
+        {
             r = Expression(file, idents);
+            EqualTo();
+        }
         else
         if(Equal(op, "!="))
+        {
             r = Expression(file, idents);
+            NotEqualTo();
+        }
+        else
+        if(Equal(op, "<"))
+        {
+            r = Expression(file, idents);
+            LessThan();
+        }
+        else
+        if(Equal(op, ">"))
+        {
+            r = Expression(file, idents);
+            GreaterThan();
+        }
+        else
+        if(Equal(op, "<="))
+        {
+            r = Expression(file, idents);
+            LessThanOrEqualTo();
+        }
+        else
+        if(Equal(op, ">="))
+        {
+            r = Expression(file, idents);
+            GreaterThanOrEqualTo();
+        }
         else
         {
             r = Term(file, idents);
@@ -474,12 +567,6 @@ Value Expression(FILE* file, Map idents)
             else
             if(Equal(op, "|"))
                 Or();
-            else
-            if(Equal(op, ">>"))
-                ShiftR();
-            else
-            if(Equal(op, "<<"))
-                ShiftL();
         }
         l.redirects = MAX(l.redirects, r.redirects);
         l.right = 1;
@@ -528,7 +615,9 @@ void Array(FILE* file, Map idents, Ident* array)
             break;
         r = Expression(file, idents);
         expressions += 1;
-        assert(r.redirects == array->redirects);
+        assert(array->redirects == 0
+            ? r.redirects < 1
+            : r.redirects == array->redirects);
         if(Peek(file) == ',')
             Match(file, ",");
         else
@@ -566,7 +655,9 @@ void LetDef(FILE* file, Map idents)
         Match(file, "=");
         r = Expression(file, idents);
         Match(file, ";");
-        assert(r.redirects == ident.redirects);
+        assert(ident.redirects == 0
+            ? r.redirects < 1
+            : r.redirects == ident.redirects);
     }
     Insert(idents, ident);
 }
@@ -686,22 +777,22 @@ int Params(FILE* file, Map idents, String* names)
     }
 }
 
-void Fun(FILE* file, Map idents)
+void FunctionDef(FILE* file, Map idents)
 {
     int i = 0;
-    String names[MAX_FUN_ARGS];
+    String params[MAX_FUNCTION_ARGS];
     Ident ident = LetDec(file);
-    ident.params = Params(file, idents, names);
+    ident.params = Params(file, idents, params);
     Insert(idents, ident);
     Block(file, idents);
     for(i = 0; i < ident.params; i++)
-        Delete(idents, names[i]);
+        Delete(idents, params[i]);
 }
 
 void Program(FILE* file, Map idents)
 {
     while(!End(file))
-        Fun(file, idents);
+        FunctionDef(file, idents);
 }
 
 int main(void)
