@@ -8,9 +8,18 @@
 #define MAX_MAP_IDENTS (512)
 #define MAX_FUNCTION_ARGS (8)
 #define MAX_STRING_CHARS (64)
+#define MAX_RUNTIME_VARIABLES (65536)
+#define MAX_RUNTIME_FUNCTIONS (512)
+#define MAX_SCOPE_LOCALS (64)
+
+static int SP = 0;
+
+char* RelationalOps[] = {
+    "==", "!=", "<", ">", "<=", ">=", NULL
+};
 
 char* TermOps[] = {
-    "=", "==", "!=", "<", ">", "<=", ">=", "+", "-", "&", "^", "|", NULL
+    "=", "+", "-", "&", "^", "|", NULL
 };
 
 char* FactOps[] = {
@@ -18,7 +27,7 @@ char* FactOps[] = {
 };
 
 char* UnaryOps[] = {
-    "$" /* print */, "~", "+", "-", "&", "*", "(", NULL
+    "$", "~", "+", "-", "&", "*", "(", NULL
 };
 
 char* Reserved[] = {
@@ -31,8 +40,10 @@ typedef struct
 {
     String name;
     int redirects;
-    /* -1 for variables */
+    int sp;
+    /* -1 for variables, 0 or more for functions */
     int params;
+    int param_redirects[MAX_FUNCTION_ARGS];
 }
 Ident;
 
@@ -107,19 +118,19 @@ Ident* Find(Map idents, char* name)
     return NULL;
 }
 
-void Insert(Map idents, Ident ident)
+void Insert(Map idents, Ident* ident)
 {
     int i;
     int index;
-    Ident* found = Find(idents, ident.name);
+    Ident* found = Find(idents, ident->name);
     assert(!found);
-    index = Index(ident.name);
+    index = Index(ident->name);
     for(i = 0; i < MAX_MAP_IDENTS; i++)
     {
         Ident* at = &idents[i];
         if(at->name[0] == '\0')
         {
-            *at = ident;
+            *at = *ident;
             break;
         }
         index = Next(index);
@@ -135,7 +146,8 @@ void Delete(Map idents, char* name)
 
 int IsTermOp(char* op)
 {
-    return IsStringIn(op, TermOps);
+    return IsStringIn(op, TermOps)
+        || IsStringIn(op, RelationalOps);
 }
 
 int IsFactOp(char* op)
@@ -145,7 +157,8 @@ int IsFactOp(char* op)
 
 int IsTermOpChar(int c)
 {
-    return IsCharIn(c, TermOps);
+    return IsCharIn(c, TermOps)
+        || IsCharIn(c, RelationalOps);
 }
 
 int IsFactOpChar(int c)
@@ -153,47 +166,47 @@ int IsFactOpChar(int c)
     return IsCharIn(c, FactOps);
 }
 
-int Read(FILE* file)
+int Read(FILE* in)
 {
-    int c = fgetc(file);
+    int c = fgetc(in);
     /* Python style comments */
     if(c == '#')
         while(c != '\n')
-            c = fgetc(file);
+            c = fgetc(in);
     return c;
 }
 
-void Stream(FILE* file, int clause(int), String string)
+void Stream(FILE* in, int clause(int), String string)
 {
     int i = 0;
     char c;
-    while(clause(c = Read(file)))
+    while(clause(c = Read(in)))
     {
         assert(i < MAX_STRING_CHARS);
         /* No need to fill buffer with spaces */
         string[clause == isspace ? 0 : i++] = c;
     }
-    ungetc(c, file);
+    ungetc(c, in);
     assert(i < MAX_STRING_CHARS);
     string[i] = '\0';
 }
 
-void Space(FILE* file)
+void Space(FILE* in)
 {
     String string;
-    Stream(file, isspace, string);
+    Stream(in, isspace, string);
 }
 
-int Peek(FILE* file)
+int Peek(FILE* in)
 {
-    Space(file);
-    return ungetc(Read(file), file);
+    Space(in);
+    return ungetc(Read(in), in);
 }
 
-void Alpha(FILE* file, String string)
+void Alpha(FILE* in, String string)
 {
-    Space(file);
-    Stream(file, isalpha, string);
+    Space(in);
+    Stream(in, isalpha, string);
 }
 
 int isalnumu(int c)
@@ -201,372 +214,409 @@ int isalnumu(int c)
     return isalnum(c) || c == '_';
 }
 
-void Alnumu(FILE* file, String string)
+void Alnumu(FILE* in, String string)
 {
-    Space(file);
-    Stream(file, isalnumu, string);
+    Space(in);
+    Stream(in, isalnumu, string);
 }
 
-void Digit(FILE* file, String string)
+void Digit(FILE* in, String string)
 {
-    Space(file);
-    Stream(file, isdigit, string);
+    Space(in);
+    Stream(in, isdigit, string);
 }
 
-void TermOp(FILE* file, String string)
+void TermOp(FILE* in, String string)
 {
-    Space(file);
-    Stream(file, IsTermOpChar, string);
+    Space(in);
+    Stream(in, IsTermOpChar, string);
 }
 
-void FactOp(FILE* file, String string)
+void FactOp(FILE* in, String string)
 {
-    Space(file);
-    Stream(file, IsFactOpChar, string);
+    Space(in);
+    Stream(in, IsFactOpChar, string);
 }
 
-void Match(FILE* file, char* with)
+void Match(FILE* in, char* with)
 {
-    Space(file);
+    Space(in);
     while(*with)
-        assert(*with++ == Read(file));
+        assert(*with++ == Read(in));
 }
 
-Value Expression(FILE* file, Map idents);
+Value Expression(FILE* in, FILE* out, Map idents);
 
-void Args(FILE* file, Map idents, int expected)
+
+void Check(int l, int r)
+{
+    assert(l == 0 ? r < 1 : r == l);
+}
+
+void Args(FILE* in, FILE* out, Map idents, Ident* ident)
 {
     int args = 0;
-    Match(file, "(");
-    if(Peek(file) == ')')
+    Match(in, "(");
+    if(Peek(in) == ')')
     {
-        Match(file, ")");
+        Match(in, ")");
         return;
     }
     else
     {
         while(1)
         {
-            Expression(file, idents);
+            Value r;
+            assert(args < ident->params);
+            r = Expression(in, out, idents);
+            Check(ident->redirects, r.redirects);
             args += 1;
-            if(Peek(file) == ',')
+            if(Peek(in) == ',')
             {
-                Match(file, ",");
+                Match(in, ",");
                 continue;
             }
-            if(Peek(file) == ')')
+            if(Peek(in) == ')')
                 break;
         }
-        Match(file, ")");
+        Match(in, ")");
     }
-    assert(args == expected);
 }
 
-Value Identifier(FILE* file, Map idents)
+Value Identifier(FILE* in, FILE* out, Map idents)
 {
     Value value = { 0 };
     String alnum;
     Ident* ident;
-    /* No need for digit check */
-    Alnumu(file, alnum);
+    Alnumu(in, alnum);
     ident = Find(idents, alnum);
     assert(ident);
     value.redirects = ident->redirects;
-    if(Peek(file) == '(')
+    if(Peek(in) == '(')
     {
         assert(ident->params >= 0);
-        Args(file, idents, ident->params);
+        Args(in, out, idents, ident);
+        fprintf(out, "\tCAL(%s);\n", ident->name);
     }
+    else
+        fprintf(out, "\tPSH(%d); /* %s */\n", ident->sp, ident->name);
     return value;
 }
 
-Value Char(FILE* file)
+Value Char(FILE* in, FILE* out)
 {
+    int c;
     Value value = { 1, -1 };
-    Match(file, "'");
-    if(Peek(file) == '\\')
-        Match(file, "\\");
-    Read(file);
-    Match(file, "'");
+    Match(in, "'");
+    if(Peek(in) == '\\')
+        Match(in, "\\");
+    c = Read(in);
+    Match(in, "'");
+    fprintf(out, "\tPSH('%c');\n", c);
     return value;
 }
 
-Value Number(FILE* file)
+Value Number(FILE* in, FILE* out)
 {
     String number;
     Value value = { 1, -1 };
-    Digit(file, number);
+    Digit(in, number);
+    fprintf(out, "\tPSH(%s);\n", number);
     return value;
 }
 
-Value Factor(FILE* file, Map idents);
+Value Factor(FILE* in, FILE* out, Map idents);
 
-Value Deref(FILE* file, Map idents)
+Value Deref(FILE* in, FILE* out, Map idents)
 {
     Value value;
-    Match(file, "*");
-    value = Factor(file, idents);
+    Match(in, "*");
+    value = Factor(in, out, idents);
     assert(value.redirects > 0);
     value.redirects -= 1;
     value.right = 0;
+    fprintf(out, "\tNOP(); /* is a NOP for deref okay? */\n");
     return value;
 }
 
-Value Ref(FILE* file, Map idents)
+Value Ref(FILE* in, FILE* out, Map idents)
 {
     Value value;
-    Match(file, "&");
-    value = Factor(file, idents);
+    Match(in, "&");
+    value = Factor(in, out, idents);
     assert(value.right == 0);
     assert(value.redirects >= 0);
     value.redirects += 1;
     value.right = 1;
+    fprintf(out, "\tNOP(); /* is a NOP for ref okay? */\n");
     return value;
 }
 
-Value Paren(FILE* file, Map idents)
+Value Paren(FILE* in, FILE* out, Map idents)
 {
     Value value;
-    Match(file, "(");
-    value = Expression(file, idents);
-    Match(file, ")");
+    Match(in, "(");
+    value = Expression(in, out, idents);
+    Match(in, ")");
     return value;
 }
 
-Value Neg(FILE* file, Map idents)
+Value Neg(FILE* in, FILE* out, Map idents)
 {
     Value value;
-    Match(file, "-");
-    value = Factor(file, idents);
+    Match(in, "-");
+    value = Factor(in, out, idents);
     assert(value.redirects <= 0);
+    fprintf(out, "\tPSH(-1);\n");
+    fprintf(out, "\tMUL();\n");
     return value;
 }
 
-Value Pos(FILE* file, Map idents)
+Value Pos(FILE* in, FILE* out, Map idents)
 {
     Value value;
-    Match(file, "+");
-    value = Factor(file, idents);
+    Match(in, "+");
+    value = Factor(in, out, idents);
     assert(value.redirects <= 0);
+    fprintf(out, "\tNOP();\n");
     return value;
 }
 
-Value Inv(FILE* file, Map idents)
+Value Inv(FILE* in, FILE* out, Map idents)
 {
     Value value;
-    Match(file, "~");
-    value = Factor(file, idents);
+    Match(in, "~");
+    value = Factor(in, out, idents);
     assert(value.redirects <= 0);
+    fprintf(out, "\tINV();\n");
     return value;
 }
 
-Value Print(FILE* file, Map idents)
+Value Print(FILE* in, FILE* out, Map idents)
 {
-    Match(file, "$");
-    return Factor(file, idents);
+    Value value;
+    Match(in, "$");
+    value = Factor(in, out, idents);
+    fprintf(out, "\tPRT();\n");
+    return value;
 }
 
-Value Unary(FILE* file, Map idents)
+Value Unary(FILE* in, FILE* out, Map idents)
 {
     Value none = { 0 };
-    int c = Peek(file);
+    int c = Peek(in);
     assert(IsCharIn(c, UnaryOps));
     if(c == '$')
-        return Print(file, idents);
+        return Print(in, out, idents);
     else
     if(c == '~')
-        return Inv(file, idents);
+        return Inv(in, out, idents);
     else
     if(c == '+')
-        return Pos(file, idents);
+        return Pos(in, out, idents);
     else
     if(c == '-')
-        return Neg(file, idents);
+        return Neg(in, out, idents);
     else
     if(c == '&')
-        return Ref(file, idents);
+        return Ref(in, out, idents);
     else
     if(c == '*')
-        return Deref(file, idents);
+        return Deref(in, out, idents);
     else
     if(c == '(')
-        return Paren(file, idents);
+        return Paren(in, out, idents);
     assert(1 && "uncaught unary operator");
     return none;
 }
 
-Value Factor(FILE* file, Map idents)
+Value Factor(FILE* in, FILE* out, Map idents)
 {
-    int c = Peek(file);
+    int c = Peek(in);
     if(c == '\'')
-        return Char(file);
+        return Char(in, out);
     else
     if(isdigit(c))
-        return Number(file);
+        return Number(in, out);
     else
     if(isalnumu(c))
-        return Identifier(file, idents);
+        return Identifier(in, out, idents);
     else
-    return
-        Unary(file, idents);
+        return Unary(in, out, idents);
 }
 
-void Add(void)
+void Get(FILE* out)
 {
+    fprintf(out, "\tGET();\n");
 }
 
-void Sub(void)
+void Add(FILE* out)
 {
+    fprintf(out, "\tADD();\n");
 }
 
-void And(void)
+void Sub(FILE* out)
 {
+    fprintf(out, "\tSUB();\n");
 }
 
-void Xor(void)
+void And(FILE* out)
 {
+    fprintf(out, "\tAND();\n");
 }
 
-void Or(void)
+void Xor(FILE* out)
 {
+    fprintf(out, "\tXOR();\n");
 }
 
-void Mul(void)
+void Or(FILE* out)
 {
+    fprintf(out, "\tORR();\n");
 }
 
-void Div(void)
+void Mul(FILE* out)
 {
+    fprintf(out, "\tMUL();\n");
 }
 
-void Mod(void)
+void Div(FILE* out)
 {
+    fprintf(out, "\tDIV();\n");
 }
 
-void Assign(void)
+void Mod(FILE* out)
 {
+    fprintf(out, "\tMOD();\n");
 }
 
-void EqualTo(void)
+void Assign(FILE* out)
 {
+    fprintf(out, "\tMOV();\n");
 }
 
-void NotEqualTo(void)
+void EqualTo(FILE* out)
 {
+    fprintf(out, "\tEQT();\n");
 }
 
-void LessThan(void)
+void NotEqualTo(FILE* out)
 {
+    fprintf(out, "\tNEQ();\n");
 }
 
-void GreaterThan(void)
+void LessThan(FILE* out)
 {
+    fprintf(out, "\tLTH();\n");
 }
 
-void LessThanOrEqualTo(void)
+void GreaterThan(FILE* out)
 {
+    fprintf(out, "\tGTH();\n");
 }
 
-void GreaterThanOrEqualTo(void)
+void LessThanOrEqualTo(FILE* out)
 {
+    fprintf(out, "\tLTE();\n");
 }
 
-Value Term(FILE* file, Map idents)
+void GreaterThanOrEqualTo(FILE* out)
+{
+    fprintf(out, "\tGTE();\n");
+}
+
+Value Term(FILE* in, FILE* out, Map idents)
 {
     String op;
-    Value l = Factor(file, idents);
-    for(FactOp(file, op); IsFactOp(op); FactOp(file, op))
+    Value l = Factor(in, out, idents);
+    for(FactOp(in, op); IsFactOp(op); FactOp(in, op))
     {
-        Value r = Factor(file, idents);
+        Value r = Factor(in, out, idents);
         if(l.redirects > 0)
             assert(r.redirects <= 0);
         if(r.redirects > 0)
             assert(l.redirects <= 0);
         if(Equal(op, "*"))
-            Mul();
+            Mul(out);
         else
         if(Equal(op, "%"))
-            Mod();
+            Mod(out);
         else
         if(Equal(op, "/"))
-            Div();
+            Div(out);
         l.redirects = MAX(l.redirects, r.redirects);
         l.right = 1;
     }
     return l;
 }
 
-Value Expression(FILE* file, Map idents)
+Value Expression(FILE* in, FILE* out, Map idents)
 {
     String op;
-    Value l = Term(file, idents);
+    Value l = Term(in, out, idents);
     Value r;
-    for(TermOp(file, op); IsTermOp(op); TermOp(file, op))
+    for(TermOp(in, op); IsTermOp(op); TermOp(in, op))
     {
         if(Equal(op, "="))
         {
             assert(l.right == 0);
-            r = Expression(file, idents);
-            assert(l.redirects == r.redirects);
-            Assign();
+            r = Expression(in, out, idents);
+            Check(l.redirects, r.redirects);
+            Assign(out);
         }
         else
-        if(Equal(op, "=="))
+        if(IsStringIn(op, RelationalOps))
         {
-            r = Expression(file, idents);
-            EqualTo();
-        }
-        else
-        if(Equal(op, "!="))
-        {
-            r = Expression(file, idents);
-            NotEqualTo();
-        }
-        else
-        if(Equal(op, "<"))
-        {
-            r = Expression(file, idents);
-            LessThan();
-        }
-        else
-        if(Equal(op, ">"))
-        {
-            r = Expression(file, idents);
-            GreaterThan();
-        }
-        else
-        if(Equal(op, "<="))
-        {
-            r = Expression(file, idents);
-            LessThanOrEqualTo();
-        }
-        else
-        if(Equal(op, ">="))
-        {
-            r = Expression(file, idents);
-            GreaterThanOrEqualTo();
+            if(l.redirects > -1)
+                Get(out);
+            r = Expression(in, out, idents);
+            if(r.redirects > -1)
+                Get(out);
+
+            if(Equal(op, "=="))
+                EqualTo(out);
+            else
+            if(Equal(op, "!="))
+                NotEqualTo(out);
+            else
+            if(Equal(op, "<"))
+                LessThan(out);
+            else
+            if(Equal(op, ">"))
+                GreaterThan(out);
+            else
+            if(Equal(op, "<="))
+                LessThanOrEqualTo(out);
+            else
+            if(Equal(op, ">="))
+                GreaterThanOrEqualTo(out);
         }
         else
         {
-            r = Term(file, idents);
+            if(l.redirects > -1)
+                Get(out);
+            r = Term(in, out, idents);
             if(l.redirects > 0)
                 assert(r.redirects <= 0);
             if(r.redirects > 0)
                 assert(l.redirects <= 0);
+            if(r.redirects > -1)
+                Get(out);
+
             if(Equal(op, "+"))
-                Add();
+                Add(out);
             else
             if(Equal(op, "-"))
-                Sub();
+                Sub(out);
             else
             if(Equal(op, "&"))
-                And();
+                And(out);
             else
             if(Equal(op, "^"))
-                Xor();
+                Xor(out);
             else
             if(Equal(op, "|"))
-                Or();
+                Or(out);
         }
         l.redirects = MAX(l.redirects, r.redirects);
         l.right = 1;
@@ -574,57 +624,61 @@ Value Expression(FILE* file, Map idents)
     return l;
 }
 
-Ident LetDec(FILE* file)
+Ident LetDec(FILE* in, int local)
 {
     char first;
     Ident ident = { 0 };
     String let;
-    Alpha(file, let);
-    while(Peek(file) == '*')
+    Alpha(in, let);
+    assert(Equal(let, "let"));
+    while(Peek(in) == '*')
     {
-        Match(file, "*");
+        Match(in, "*");
         ident.redirects += 1;
     }
-    Alnumu(file, ident.name);
+    Alnumu(in, ident.name);
     first = ident.name[0];
     assert(isalpha(first) || first == '_');
+    if(local)
+    {
+        ident.sp = SP;
+        SP += 1;
+    }
     return ident;
 }
 
-int End(FILE* file)
+int End(FILE* in)
 {
-    Space(file);
-    return Peek(file) == EOF;
+    Space(in);
+    return Peek(in) == EOF;
 }
 
-void Array(FILE* file, Map idents, Ident* array)
+void Array(FILE* in, FILE* out, Map idents, Ident* array)
 {
     int expressions = 0;
     int size;
     String digit;
-    Match(file, "[");
-    Digit(file, digit);
+    Match(in, "[");
+    Digit(in, digit);
     size = atoi(digit);
-    Match(file, "]");
-    Match(file, "=");
-    Match(file, "{");
+    Match(in, "]");
+    Match(in, "=");
+    Match(in, "{");
     while(1)
     {
         Value r;
-        if(Peek(file) == '}')
+        if(Peek(in) == '}')
             break;
-        r = Expression(file, idents);
+        r = Expression(in, out, idents);
         expressions += 1;
-        assert(array->redirects == 0
-            ? r.redirects < 1
-            : r.redirects == array->redirects);
-        if(Peek(file) == ',')
-            Match(file, ",");
+        Check(array->redirects, r.redirects);
+        if(Peek(in) == ',')
+            Match(in, ",");
         else
             break;
     }
-    Match(file, "}");
-    Match(file, ";");
+    Match(in, "}");
+    Match(in, ";");
     if(size == 0)
     {
         assert(expressions > 0);
@@ -643,163 +697,222 @@ void Array(FILE* file, Map idents, Ident* array)
     array->redirects += 1;
 }
 
-void LetDef(FILE* file, Map idents)
+void LetDef(FILE* in, FILE* out, Map idents, Ident* ident)
 {
-    Ident ident = LetDec(file);
-    ident.params = -1;
-    if(Peek(file) == '[')
-        Array(file, idents, &ident);
+    ident->params = -1;
+    if(Peek(in) == '[')
+        Array(in, out, idents, ident);
     else
     {
         Value r;
-        Match(file, "=");
-        r = Expression(file, idents);
-        Match(file, ";");
-        assert(ident.redirects == 0
-            ? r.redirects < 1
-            : r.redirects == ident.redirects);
+        Match(in, "=");
+        r = Expression(in, out, idents);
+        Match(in, ";");
+        Check(ident->redirects, r.redirects);
     }
     Insert(idents, ident);
 }
 
-void Rewind(FILE* file, char* string)
+void Rewind(FILE* in, char* string)
 {
-    fseek(file, -strlen(string), SEEK_CUR);
+    fseek(in, -strlen(string), SEEK_CUR);
 }
 
-void Block(FILE* file, Map idents);
+void Block(FILE* in, FILE* out, Map idents);
 
-void If(FILE* file, Map idents)
+void If(FILE* in, FILE* out, Map idents)
 {
-    Match(file, "(");
-    Expression(file, idents);
-    Match(file, ")");
-    Block(file, idents);
+    Match(in, "(");
+    Expression(in, out, idents);
+    Match(in, ")");
+    Block(in, out, idents);
     while(1)
     {
         String key = { 0 };
-        Alpha(file, key);
+        Alpha(in, key);
         if(Equal(key, "elif"))
         {
-            Match(file, "(");
-            Expression(file, idents);
-            Match(file, ")");
-            Block(file, idents);
+            Match(in, "(");
+            Expression(in, out, idents);
+            Match(in, ")");
+            Block(in, out, idents);
             continue;
         }
         else
         if(Equal(key, "else"))
         {
-            Block(file, idents);
+            Block(in, out, idents);
             break;
         }
         else
         {
-            Rewind(file, key);
+            Rewind(in, key);
             break;
         }
     }
 }
 
-void Ret(FILE* file, Map idents)
+void Ret(FILE* in, FILE* out, Map idents)
 {
-    Expression(file, idents);
-    Match(file, ";");
+    Expression(in, out, idents);
+    fprintf(out, "\tRET();\n");
+    Match(in, ";");
 }
 
-void While(FILE* file, Map idents)
+void While(FILE* in, FILE* out, Map idents)
 {
-    Match(file, "(");
-    Expression(file, idents);
-    Match(file, ")");
-    Block(file, idents);
+    Match(in, "(");
+    Expression(in, out, idents);
+    Match(in, ")");
+    Block(in, out, idents);
 }
 
-void Block(FILE* file, Map idents)
+void Block(FILE* in, FILE* out, Map idents)
 {
-    Match(file, "{");
-    while(Peek(file) != '}')
+    int i;
+    int count = 0;
+    String locals[MAX_SCOPE_LOCALS];
+    Match(in, "{");
+    while(Peek(in) != '}')
     {
         String key = { 0 };
-        Alpha(file, key);
+        Alpha(in, key);
         if(Equal(key, "let"))
         {
-            Rewind(file, key);
-            LetDef(file, idents);
+            Ident ident;
+            Rewind(in, key);
+            ident = LetDec(in, 1);
+            LetDef(in, out, idents, &ident);
+            assert(count < MAX_SCOPE_LOCALS);
+            strcpy(locals[count], ident.name);
+            count += 1;
         }
         else
         if(Equal(key, "if"))
-            If(file, idents);
+            If(in, out, idents);
         else
         if(Equal(key, "ret"))
-            Ret(file, idents);
+            Ret(in, out, idents);
         else
         if(Equal(key, "while"))
-            While(file, idents);
-        else
+            While(in, out, idents);
+        else /* plain expression with no assignment */
         {
-            Rewind(file, key);
-            Expression(file, idents);
-            Match(file, ";");
+            Rewind(in, key);
+            Expression(in, out, idents);
+            Match(in, ";");
+            fprintf(out, "\tPOP(); /* no assignment */\n");
         }
     }
-    Match(file, "}");
+    Match(in, "}");
+    for(i = 0; i < count; i++)
+    {
+        Delete(idents, locals[i]);
+        SP -= 1;
+    }
 }
 
-int Params(FILE* file, Map idents, String* names)
+Ident Params(FILE* in, Map idents, String* names)
 {
-    Match(file, "(");
-    if(Peek(file) == ')')
+    Ident ident = LetDec(in, 0);
+    Match(in, "(");
+    if(Peek(in) == ')')
     {
-        Match(file, ")");
-        return 0;
+        Match(in, ")");
+        return ident;
     }
     else
     {
-        int params = 0;
         while(1)
         {
-            Ident param = LetDec(file);
-            Insert(idents, param);
-            strcpy(names[params], param.name);
-            params += 1;
-            if(Peek(file) == ',')
+            Ident param = LetDec(in, 1);
+            Insert(idents, &param);
+            assert(ident.params < MAX_FUNCTION_ARGS);
+            strcpy(names[ident.params], param.name);
+            ident.param_redirects[ident.params] = param.redirects;
+            ident.params += 1;
+            if(Peek(in) == ',')
             {
-                Match(file, ",");
+                Match(in, ",");
                 continue;
             }
             else
-            if(Peek(file) == ')')
+            if(Peek(in) == ')')
                 break;
         }
-        Match(file, ")");
-        return params;
+        Match(in, ")");
+        return ident;
     }
 }
 
-void FunctionDef(FILE* file, Map idents)
+void Func(FILE* in, FILE* out, Map idents)
 {
     int i = 0;
     String params[MAX_FUNCTION_ARGS];
-    Ident ident = LetDec(file);
-    ident.params = Params(file, idents, params);
-    Insert(idents, ident);
-    Block(file, idents);
+    Ident ident = Params(in, idents, params);
+    fprintf(out, "%s:\n", ident.name);
+    Insert(idents, &ident);
+    Block(in, out, idents);
     for(i = 0; i < ident.params; i++)
+    {
         Delete(idents, params[i]);
+        SP -= 1;
+    }
+    assert(SP == 0);
+    fprintf(out, "\tPSH(0);\n");
+    fprintf(out, "\tRET();\n");
 }
 
-void Program(FILE* file, Map idents)
+void Header(FILE* out)
 {
-    while(!End(file))
-        FunctionDef(file, idents);
+    fprintf(out,
+        "#define MID() stack[sp - 2]\n"
+        "#define TOP() stack[sp - 1]\n"
+        "#define CAL(name) func[fp++] = __LINE__; goto name; case __LINE__:\n"
+        "#define RET() if(fp == 0) return TOP(); else { pc = func[--fp]; goto begin; }\n"
+        "#define PSH(var) stack[sp++] = var\n"
+        "#define POP() --sp\n"
+        "#define GET() TOP() = stack[TOP()]\n"
+        "#define ADD() MID() += TOP(); POP();\n"
+        "#define SUB() MID() -= TOP(); POP();\n"
+        "#define PRT() putchar(TOP());\n");
+
+    fprintf(out,
+        "int main(void)\n"
+        "{\n"
+        "\tint func[%d];\n"
+        "\tint stack[%d];\n"
+        "\tint fp = 0;\n"
+        "\tint pc = 0;\n"
+        "\tint sp = 0;\n"
+        "\tgoto main;\n"
+        "begin:\n"
+        "\tswitch(pc)\n"
+        "\t{\n",
+            MAX_RUNTIME_FUNCTIONS,
+            MAX_RUNTIME_VARIABLES);
+}
+
+void Footer(FILE* out)
+{
+    fprintf(out, "\t}\n\treturn 0;\n}");
+}
+
+void Program(FILE* in, FILE* out, Map idents)
+{
+    Header(out);
+    while(!End(in))
+        Func(in, out, idents);
+    Footer(out);
 }
 
 int main(void)
 {
-    FILE* file = fopen("main.sw", "r");
+    FILE* in = fopen("main.sw", "r");
+    FILE* out = fopen("out.c", "w");
     Map idents = { 0 };
-    Program(file, idents);
-    fclose(file);
+    Program(in, out, idents);
+    fclose(in);
+    fclose(out);
     return 0;
 }
