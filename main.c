@@ -1000,10 +1000,10 @@ void Program(FILE* in, FILE* out, Map* idents)
     Footer(out);
 }
 
-int main(void)
+int main(int argc, char** argv)
 {
-    FILE* in = fopen("main.sw", "r");
-    FILE* out = fopen("out.c", "w");
+    FILE* in = fopen(argv[1], "r");
+    FILE* out = fopen(argv[2], "w");
     Map idents = { 0 };
     Program(in, out, &idents);
     fclose(in);
