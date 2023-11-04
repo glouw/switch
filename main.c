@@ -26,7 +26,7 @@ char* FactOps[] = {
 };
 
 char* UnaryOps[] = {
-    "$", "~", "+", "-", "&", "*", "(", NULL
+    "!", "$", "~", "+", "-", "&", "*", "(", NULL
 };
 
 char* Reserved[] = {
@@ -51,6 +51,7 @@ typedef struct
 {
     Ident ident[MAX_MAP_IDENTS];
     int sp;
+    int label;
 }
 Map;
 
@@ -394,22 +395,31 @@ Value Pos(FILE* in, FILE* out, Map* idents)
     return value;
 }
 
-Value Inv(FILE* in, FILE* out, Map* idents)
+Value Flp(FILE* in, FILE* out, Map* idents)
 {
     Value value;
     Match(in, "~");
     value = Factor(in, out, idents);
     assert(value.redirects <= 0);
-    fprintf(out, "\tINV();\n");
+    fprintf(out, "\tFLP();\n");
     return value;
 }
 
-Value Print(FILE* in, FILE* out, Map* idents)
+Value Prt(FILE* in, FILE* out, Map* idents)
 {
     Value value;
     Match(in, "$");
     value = Factor(in, out, idents);
     fprintf(out, "\tPRT();\n");
+    return value;
+}
+
+Value Not(FILE* in, FILE* out, Map* idents)
+{
+    Value value;
+    Match(in, "!");
+    value = Factor(in, out, idents);
+    fprintf(out, "\tNOT();\n");
     return value;
 }
 
@@ -419,10 +429,13 @@ Value Unary(FILE* in, FILE* out, Map* idents)
     int c = Peek(in);
     assert(IsCharIn(c, UnaryOps));
     if(c == '$')
-        return Print(in, out, idents);
+        return Prt(in, out, idents);
+    else
+    if(c == '!')
+        return Not(in, out, idents);
     else
     if(c == '~')
-        return Inv(in, out, idents);
+        return Flp(in, out, idents);
     else
     if(c == '+')
         return Pos(in, out, idents);
@@ -682,6 +695,8 @@ void Array(FILE* in, FILE* out, Map* idents, Ident* array)
         if(Peek(in) == '}')
             break;
         r = Expression(in, out, idents);
+        if(!r.right)
+            Get(out);
         expressions += 1;
         Check(array->redirects, r.redirects);
         if(Peek(in) == ',')
@@ -736,20 +751,34 @@ void Block(FILE* in, FILE* out, Map* idents);
 
 void If(FILE* in, FILE* out, Map* idents)
 {
+    int l0 = idents->label++;
+    int lx = idents->label++; // abort label
+    Value r;
     Match(in, "(");
-    Expression(in, out, idents);
+    r = Expression(in, out, idents);
+    if(!r.right)
+        Get(out);
     Match(in, ")");
+    fprintf(out, "\tBRZ(L%d);\n", l0);
     Block(in, out, idents);
+    fprintf(out, "\tBRA(L%d);\n", lx);
+    fprintf(out, "L%d:\n", l0);
     while(1)
     {
         String key = { 0 };
         Alpha(in, key);
         if(Equal(key, "elif"))
         {
+            int l1 = idents->label++;
             Match(in, "(");
-            Expression(in, out, idents);
+            r = Expression(in, out, idents);
+            if(!r.right)
+                Get(out);
             Match(in, ")");
+            fprintf(out, "\tBRZ(L%d);\n", l1);
             Block(in, out, idents);
+            fprintf(out, "\tBRA(L%d);\n", lx);
+            fprintf(out, "L%d:\n", l1);
             continue;
         }
         else
@@ -764,6 +793,7 @@ void If(FILE* in, FILE* out, Map* idents)
             break;
         }
     }
+    fprintf(out, "L%d:\n", lx);
 }
 
 void Ret(FILE* in, FILE* out, Map* idents)
@@ -778,7 +808,9 @@ void Ret(FILE* in, FILE* out, Map* idents)
 void While(FILE* in, FILE* out, Map* idents)
 {
     Match(in, "(");
-    Expression(in, out, idents);
+    Value r = Expression(in, out, idents);
+    if(!r.right)
+        Get(out);
     Match(in, ")");
     Block(in, out, idents);
 }
@@ -881,6 +913,7 @@ void Func(FILE* in, FILE* out, Map* idents)
 
 void Header(FILE* out)
 {
+    /* call stack setup, calling, and returning */
     fprintf(out,
         "#define SET()"
             "bs[fp] = sp\n"
@@ -892,9 +925,6 @@ void Header(FILE* out)
             "case __LINE__:\n"
 
         "#define RET()"
-            /* main returns to shell */
-            "if(fp == 1)"
-                "return vs[sp - 1];"
             /* otherwise, to the return register */
             "rr = vs[sp - 1];"
             "--fp;"
@@ -905,22 +935,40 @@ void Header(FILE* out)
             "sp++;"
             "goto begin\n"
         );
+
+    /* operators */
     fprintf(out,
         "#define REF(ref) vs[sp++] = ref + bs[fp - 1]\n"
         "#define INT(var) vs[sp++] = var\n"
-        "#define PRT() putchar(vs[sp - 1])\n"
-        "#define GET() vs[sp - 1] = vs[vs[sp - 1]]\n"
-        "#define ADD() vs[sp - 2] += vs[sp - 1]; --sp\n"
-        "#define SUB() vs[sp - 2] -= vs[sp - 1]; --sp\n"
-        "#define AND() vs[sp - 2] &= vs[sp - 1]; --sp\n"
-        "#define XOR() vs[sp - 2] ^= vs[sp - 1]; --sp\n"
-        "#define ORR() vs[sp - 2] |= vs[sp - 1]; --sp\n"
         "#define MOV() vs[vs[sp - 2]] = vs[sp - 1]; --sp\n"
+        "#define PRT() putchar(vs[sp - 1])\n"
+        "#define NOT() vs[sp - 1] = vs[sp - 1] == 0 ? 0 : 1\n"
+        "#define FLP() vs[sp - 1] = ~vs[sp - 1]\n"
+        "#define POS() vs[sp - 1] = +vs[sp - 1]\n"
+        "#define NEG() vs[sp - 1] = -vs[sp - 1]\n"
+        "#define GET() vs[sp - 1] = vs[vs[sp - 1]]\n"
+        "#define ADD() vs[sp - 2] = vs[sp - 2] +  vs[sp - 1]; --sp\n"
+        "#define SUB() vs[sp - 2] = vs[sp - 2] -  vs[sp - 1]; --sp\n"
+        "#define AND() vs[sp - 2] = vs[sp - 2] &  vs[sp - 1]; --sp\n"
+        "#define XOR() vs[sp - 2] = vs[sp - 2] ^  vs[sp - 1]; --sp\n"
+        "#define ORR() vs[sp - 2] = vs[sp - 2] |  vs[sp - 1]; --sp\n"
+        "#define MUL() vs[sp - 2] = vs[sp - 2] *  vs[sp - 1]; --sp\n"
+        "#define DIV() vs[sp - 2] = vs[sp - 2] /  vs[sp - 1]; --sp\n"
+        "#define MOD() vs[sp - 2] = vs[sp - 2] %% vs[sp - 1]; --sp\n"
+        "#define EQT() vs[sp - 2] = vs[sp - 1] == vs[sp - 2]; --sp\n"
+        "#define NEQ() vs[sp - 2] = vs[sp - 1] != vs[sp - 2]; --sp\n"
+        "#define LTH() vs[sp - 2] = vs[sp - 1] <  vs[sp - 2]; --sp\n"
+        "#define GTH() vs[sp - 2] = vs[sp - 1] >  vs[sp - 2]; --sp\n"
+        "#define LTE() vs[sp - 2] = vs[sp - 1] <= vs[sp - 2]; --sp\n"
+        "#define GTE() vs[sp - 2] = vs[sp - 1] >= vs[sp - 2]; --sp\n"
         "#define POP() --sp\n"
+        "#define BRZ(label) if(vs[--sp] == 0) goto label\n"
+        "#define BRA(label) goto label\n"
         );
+
+    /* entry */
     fprintf(out,
-        "int main(void)\n"
-        "{\n"
+        "int main(void) {\n"
         "\tint fs[%d] = { 0 };\n" /* function stack: top is prev function address */
         "\tint bs[%d] = { 0 };\n" /* base pointer stack: top is prev stack pointer */
         "\tint vs[%d] = { 0 };\n" /* variable stack */
@@ -930,6 +978,8 @@ void Header(FILE* out)
         "\tint rr = 0;\n" /* return register */
         "\tgoto main;\n"
         "begin:\n"
+        "\tif(fp == 0)\n"
+            "\t\treturn vs[sp - 1];\n"
         "\tswitch(fa)\n"
         "\t{\n",
             RUNTIME_FUNCTION_STACK_SIZE,

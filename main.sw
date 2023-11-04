@@ -1,18 +1,21 @@
-let test()
+let fibbonacci(let x)
 {
-    let a = 1;
-    let b = 2;
-    let* c = &a + 0;
-    ret *c;
-}
-
-let fun(let a)
-{
-    let b = 4;
-    ret a + b + test();
+    if(x == 0)
+    {
+        ret 0;
+    }
+    elif(x == 1)
+    {
+        ret 1;
+    }
+    else
+    {
+        ret fibbonacci(x - 1)
+          + fibbonacci(x - 2);
+    }
 }
 
 let main()
 {
-    ret fun(9);
+    ret fibbonacci(13);
 }
