@@ -12,8 +12,6 @@
 #define MAX_RUNTIME_FUNCTIONS (512)
 #define MAX_SCOPE_LOCALS (64)
 
-static int SP = 0;
-
 char* RelationalOps[] = {
     "==", "!=", "<", ">", "<=", ">=", NULL
 };
@@ -48,7 +46,12 @@ typedef struct
 Ident;
 
 /* Open address hashing */
-typedef Ident Map[MAX_MAP_IDENTS];
+typedef struct
+{
+    Ident ident[MAX_MAP_IDENTS];
+    int sp;
+}
+Map;
 
 typedef struct
 {
@@ -102,7 +105,7 @@ int IsCharIn(int c, char* strings[])
     return 0;
 }
 
-Ident* Find(Map idents, char* name)
+Ident* Find(Map* idents, char* name)
 {
     int i;
     int index;
@@ -110,7 +113,7 @@ Ident* Find(Map idents, char* name)
     index = Index(name);
     for(i = 0; i < MAX_MAP_IDENTS; i++)
     {
-        Ident* at = &idents[index];
+        Ident* at = &idents->ident[index];
         if(Equal(at->name, name))
             return at;
         index = Next(index);
@@ -118,7 +121,7 @@ Ident* Find(Map idents, char* name)
     return NULL;
 }
 
-void Insert(Map idents, Ident* ident)
+void Insert(Map* idents, Ident* ident)
 {
     int i;
     int index;
@@ -127,7 +130,7 @@ void Insert(Map idents, Ident* ident)
     index = Index(ident->name);
     for(i = 0; i < MAX_MAP_IDENTS; i++)
     {
-        Ident* at = &idents[i];
+        Ident* at = &idents->ident[i];
         if(at->name[0] == '\0')
         {
             *at = *ident;
@@ -137,7 +140,7 @@ void Insert(Map idents, Ident* ident)
     }
 }
 
-void Delete(Map idents, char* name)
+void Delete(Map* idents, char* name)
 {
     Ident* ident = Find(idents, name);
     if(ident)
@@ -245,7 +248,7 @@ void Match(FILE* in, char* with)
         assert(*with++ == Read(in));
 }
 
-Value Expression(FILE* in, FILE* out, Map idents);
+Value Expression(FILE* in, FILE* out, Map* idents);
 
 
 void Check(int l, int r)
@@ -253,14 +256,14 @@ void Check(int l, int r)
     assert(l == 0 ? r < 1 : r == l);
 }
 
-void Args(FILE* in, FILE* out, Map idents, Ident* ident)
+int Args(FILE* in, FILE* out, Map* idents, Ident* ident)
 {
     int args = 0;
     Match(in, "(");
     if(Peek(in) == ')')
     {
         Match(in, ")");
-        return;
+        return 0;
     }
     else
     {
@@ -270,6 +273,8 @@ void Args(FILE* in, FILE* out, Map idents, Ident* ident)
             assert(args < ident->params);
             r = Expression(in, out, idents);
             Check(ident->redirects, r.redirects);
+            if(r.redirects > -1)
+                Get(out);
             args += 1;
             if(Peek(in) == ',')
             {
@@ -281,9 +286,10 @@ void Args(FILE* in, FILE* out, Map idents, Ident* ident)
         }
         Match(in, ")");
     }
+    return args;
 }
 
-Value Identifier(FILE* in, FILE* out, Map idents)
+Value Identifier(FILE* in, FILE* out, Map* idents)
 {
     Value value = { 0 };
     String alnum;
@@ -294,12 +300,14 @@ Value Identifier(FILE* in, FILE* out, Map idents)
     value.redirects = ident->redirects;
     if(Peek(in) == '(')
     {
+        int args;
         assert(ident->params >= 0);
-        Args(in, out, idents, ident);
+        fprintf(out, "\tSET();\n");
+        args = Args(in, out, idents, ident);
         fprintf(out, "\tCAL(%s);\n", ident->name);
     }
     else
-        fprintf(out, "\tPSH(%d); /* %s */\n", ident->sp, ident->name);
+        fprintf(out, "\tREF(%d); /* %s */\n", ident->sp, ident->name);
     return value;
 }
 
@@ -312,7 +320,7 @@ Value Char(FILE* in, FILE* out)
         Match(in, "\\");
     c = Read(in);
     Match(in, "'");
-    fprintf(out, "\tPSH('%c');\n", c);
+    fprintf(out, "\tINT('%c');\n", c);
     return value;
 }
 
@@ -321,13 +329,13 @@ Value Number(FILE* in, FILE* out)
     String number;
     Value value = { 1, -1 };
     Digit(in, number);
-    fprintf(out, "\tPSH(%s);\n", number);
+    fprintf(out, "\tINT(%s);\n", number);
     return value;
 }
 
-Value Factor(FILE* in, FILE* out, Map idents);
+Value Factor(FILE* in, FILE* out, Map* idents);
 
-Value Deref(FILE* in, FILE* out, Map idents)
+Value Deref(FILE* in, FILE* out, Map* idents)
 {
     Value value;
     Match(in, "*");
@@ -339,7 +347,7 @@ Value Deref(FILE* in, FILE* out, Map idents)
     return value;
 }
 
-Value Ref(FILE* in, FILE* out, Map idents)
+Value Ref(FILE* in, FILE* out, Map* idents)
 {
     Value value;
     Match(in, "&");
@@ -352,7 +360,7 @@ Value Ref(FILE* in, FILE* out, Map idents)
     return value;
 }
 
-Value Paren(FILE* in, FILE* out, Map idents)
+Value Paren(FILE* in, FILE* out, Map* idents)
 {
     Value value;
     Match(in, "(");
@@ -361,18 +369,18 @@ Value Paren(FILE* in, FILE* out, Map idents)
     return value;
 }
 
-Value Neg(FILE* in, FILE* out, Map idents)
+Value Neg(FILE* in, FILE* out, Map* idents)
 {
     Value value;
     Match(in, "-");
     value = Factor(in, out, idents);
     assert(value.redirects <= 0);
-    fprintf(out, "\tPSH(-1);\n");
+    fprintf(out, "\tINT(-1);\n");
     fprintf(out, "\tMUL();\n");
     return value;
 }
 
-Value Pos(FILE* in, FILE* out, Map idents)
+Value Pos(FILE* in, FILE* out, Map* idents)
 {
     Value value;
     Match(in, "+");
@@ -382,7 +390,7 @@ Value Pos(FILE* in, FILE* out, Map idents)
     return value;
 }
 
-Value Inv(FILE* in, FILE* out, Map idents)
+Value Inv(FILE* in, FILE* out, Map* idents)
 {
     Value value;
     Match(in, "~");
@@ -392,7 +400,7 @@ Value Inv(FILE* in, FILE* out, Map idents)
     return value;
 }
 
-Value Print(FILE* in, FILE* out, Map idents)
+Value Print(FILE* in, FILE* out, Map* idents)
 {
     Value value;
     Match(in, "$");
@@ -401,7 +409,7 @@ Value Print(FILE* in, FILE* out, Map idents)
     return value;
 }
 
-Value Unary(FILE* in, FILE* out, Map idents)
+Value Unary(FILE* in, FILE* out, Map* idents)
 {
     Value none = { 0 };
     int c = Peek(in);
@@ -430,7 +438,7 @@ Value Unary(FILE* in, FILE* out, Map idents)
     return none;
 }
 
-Value Factor(FILE* in, FILE* out, Map idents)
+Value Factor(FILE* in, FILE* out, Map* idents)
 {
     int c = Peek(in);
     if(c == '\'')
@@ -525,7 +533,7 @@ void GreaterThanOrEqualTo(FILE* out)
     fprintf(out, "\tGTE();\n");
 }
 
-Value Term(FILE* in, FILE* out, Map idents)
+Value Term(FILE* in, FILE* out, Map* idents)
 {
     String op;
     Value l = Factor(in, out, idents);
@@ -550,7 +558,7 @@ Value Term(FILE* in, FILE* out, Map idents)
     return l;
 }
 
-Value Expression(FILE* in, FILE* out, Map idents)
+Value Expression(FILE* in, FILE* out, Map* idents)
 {
     String op;
     Value l = Term(in, out, idents);
@@ -562,6 +570,8 @@ Value Expression(FILE* in, FILE* out, Map idents)
             assert(l.right == 0);
             r = Expression(in, out, idents);
             Check(l.redirects, r.redirects);
+            if(r.redirects > -1)
+                Get(out);
             Assign(out);
         }
         else
@@ -624,7 +634,7 @@ Value Expression(FILE* in, FILE* out, Map idents)
     return l;
 }
 
-Ident LetDec(FILE* in, int local)
+Ident LetDec(FILE* in, int local, Map* idents)
 {
     char first;
     Ident ident = { 0 };
@@ -641,8 +651,8 @@ Ident LetDec(FILE* in, int local)
     assert(isalpha(first) || first == '_');
     if(local)
     {
-        ident.sp = SP;
-        SP += 1;
+        ident.sp = idents->sp;
+        idents->sp += 1;
     }
     return ident;
 }
@@ -653,7 +663,7 @@ int End(FILE* in)
     return Peek(in) == EOF;
 }
 
-void Array(FILE* in, FILE* out, Map idents, Ident* array)
+void Array(FILE* in, FILE* out, Map* idents, Ident* array)
 {
     int expressions = 0;
     int size;
@@ -697,7 +707,7 @@ void Array(FILE* in, FILE* out, Map idents, Ident* array)
     array->redirects += 1;
 }
 
-void LetDef(FILE* in, FILE* out, Map idents, Ident* ident)
+void LetDef(FILE* in, FILE* out, Map* idents, Ident* ident)
 {
     ident->params = -1;
     if(Peek(in) == '[')
@@ -709,6 +719,8 @@ void LetDef(FILE* in, FILE* out, Map idents, Ident* ident)
         r = Expression(in, out, idents);
         Match(in, ";");
         Check(ident->redirects, r.redirects);
+        if(r.redirects > -1)
+            Get(out);
     }
     Insert(idents, ident);
 }
@@ -718,9 +730,9 @@ void Rewind(FILE* in, char* string)
     fseek(in, -strlen(string), SEEK_CUR);
 }
 
-void Block(FILE* in, FILE* out, Map idents);
+void Block(FILE* in, FILE* out, Map* idents);
 
-void If(FILE* in, FILE* out, Map idents)
+void If(FILE* in, FILE* out, Map* idents)
 {
     Match(in, "(");
     Expression(in, out, idents);
@@ -752,14 +764,14 @@ void If(FILE* in, FILE* out, Map idents)
     }
 }
 
-void Ret(FILE* in, FILE* out, Map idents)
+void Ret(FILE* in, FILE* out, Map* idents)
 {
     Expression(in, out, idents);
     fprintf(out, "\tRET();\n");
     Match(in, ";");
 }
 
-void While(FILE* in, FILE* out, Map idents)
+void While(FILE* in, FILE* out, Map* idents)
 {
     Match(in, "(");
     Expression(in, out, idents);
@@ -767,7 +779,7 @@ void While(FILE* in, FILE* out, Map idents)
     Block(in, out, idents);
 }
 
-void Block(FILE* in, FILE* out, Map idents)
+void Block(FILE* in, FILE* out, Map* idents)
 {
     int i;
     int count = 0;
@@ -781,7 +793,7 @@ void Block(FILE* in, FILE* out, Map idents)
         {
             Ident ident;
             Rewind(in, key);
-            ident = LetDec(in, 1);
+            ident = LetDec(in, 1, idents);
             LetDef(in, out, idents, &ident);
             assert(count < MAX_SCOPE_LOCALS);
             strcpy(locals[count], ident.name);
@@ -808,13 +820,13 @@ void Block(FILE* in, FILE* out, Map idents)
     for(i = 0; i < count; i++)
     {
         Delete(idents, locals[i]);
-        SP -= 1;
+        idents->sp -= 1;
     }
 }
 
-Ident Params(FILE* in, Map idents, String* names)
+Ident Params(FILE* in, Map* idents, String* names)
 {
-    Ident ident = LetDec(in, 0);
+    Ident ident = LetDec(in, 0, idents);
     Match(in, "(");
     if(Peek(in) == ')')
     {
@@ -825,7 +837,7 @@ Ident Params(FILE* in, Map idents, String* names)
     {
         while(1)
         {
-            Ident param = LetDec(in, 1);
+            Ident param = LetDec(in, 1, idents);
             Insert(idents, &param);
             assert(ident.params < MAX_FUNCTION_ARGS);
             strcpy(names[ident.params], param.name);
@@ -845,7 +857,7 @@ Ident Params(FILE* in, Map idents, String* names)
     }
 }
 
-void Func(FILE* in, FILE* out, Map idents)
+void Func(FILE* in, FILE* out, Map* idents)
 {
     int i = 0;
     String params[MAX_FUNCTION_ARGS];
@@ -856,32 +868,38 @@ void Func(FILE* in, FILE* out, Map idents)
     for(i = 0; i < ident.params; i++)
     {
         Delete(idents, params[i]);
-        SP -= 1;
+        idents->sp -= 1;
     }
-    assert(SP == 0);
-    fprintf(out, "\tPSH(0);\n");
+    assert(idents->sp == 0);
+    fprintf(out, "\tINT(0);\n");
     fprintf(out, "\tRET();\n");
 }
 
 void Header(FILE* out)
 {
     fprintf(out,
-        "#define MID() stack[sp - 2]\n"
-        "#define TOP() stack[sp - 1]\n"
-        "#define CAL(name) func[fp++] = __LINE__; goto name; case __LINE__:\n"
-        "#define RET() if(fp == 0) return TOP(); else { pc = func[--fp]; goto begin; }\n"
-        "#define PSH(var) stack[sp++] = var\n"
+        "#define MID() st[sp - 2]\n"
+        "#define TOP() st[sp - 1]\n"
+        "#define SET() sh[fp + 1] = sp\n"
+        "#define CAL(name) fn[fp++] = __LINE__; goto name; case __LINE__:\n"
+        "#define RET() if(fp == 0) return TOP(); else { pc = fn[--fp]; goto begin; }\n"
+        "#define REF(ref) st[sp++] = ref + sh[fp]\n"
+        "#define INT(var) st[sp++] = var\n"
         "#define POP() --sp\n"
-        "#define GET() TOP() = stack[TOP()]\n"
-        "#define ADD() MID() += TOP(); POP();\n"
-        "#define SUB() MID() -= TOP(); POP();\n"
+        "#define GET() TOP() = st[TOP()]\n"
+        "#define ADD() MID() += TOP(); POP()\n"
+        "#define SUB() MID() -= TOP(); POP()\n"
+        "#define AND() MID() &= TOP(); POP()\n"
+        "#define XOR() MID() ^= TOP(); POP()\n"
+        "#define ORR() MID() |= TOP(); POP()\n"
         "#define PRT() putchar(TOP());\n");
 
     fprintf(out,
         "int main(void)\n"
         "{\n"
-        "\tint func[%d];\n"
-        "\tint stack[%d];\n"
+        "\tint fn[%d] = { 0 };\n"
+        "\tint sh[%d] = { 0 };\n"
+        "\tint st[%d] = { 0 };\n"
         "\tint fp = 0;\n"
         "\tint pc = 0;\n"
         "\tint sp = 0;\n"
@@ -889,6 +907,7 @@ void Header(FILE* out)
         "begin:\n"
         "\tswitch(pc)\n"
         "\t{\n",
+            MAX_RUNTIME_FUNCTIONS,
             MAX_RUNTIME_FUNCTIONS,
             MAX_RUNTIME_VARIABLES);
 }
@@ -898,7 +917,7 @@ void Footer(FILE* out)
     fprintf(out, "\t}\n\treturn 0;\n}");
 }
 
-void Program(FILE* in, FILE* out, Map idents)
+void Program(FILE* in, FILE* out, Map* idents)
 {
     Header(out);
     while(!End(in))
@@ -911,7 +930,7 @@ int main(void)
     FILE* in = fopen("main.sw", "r");
     FILE* out = fopen("out.c", "w");
     Map idents = { 0 };
-    Program(in, out, idents);
+    Program(in, out, &idents);
     fclose(in);
     fclose(out);
     return 0;
