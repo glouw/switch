@@ -1,23 +1,18 @@
-let add(let x, let y)
+let test()
 {
     let a = 1;
     let b = 2;
-    let c = 3;
-    ret x + y;
+    let* c = &a + 0;
+    ret *c;
 }
 
-let temp(let x, let y)
+let fun(let a)
 {
-    let a = 1;
-    let b = 2;
-    let c = 3;
-    ret add(x, y);
+    let b = 4;
+    ret a + b + test();
 }
 
 let main()
 {
-    let a = 1;
-    let b = 2;
-    let c = 3;
-    ret temp(9, 3);
+    ret fun(9);
 }

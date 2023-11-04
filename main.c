@@ -8,9 +8,10 @@
 #define MAX_MAP_IDENTS (512)
 #define MAX_FUNCTION_ARGS (8)
 #define MAX_STRING_CHARS (64)
-#define MAX_RUNTIME_VARIABLES (65536)
-#define MAX_RUNTIME_FUNCTIONS (512)
 #define MAX_SCOPE_LOCALS (64)
+
+#define RUNTIME_VARIABLE_STACK_SIZE (65536)
+#define RUNTIME_FUNCTION_STACK_SIZE (512)
 
 char* RelationalOps[] = {
     "==", "!=", "<", ">", "<=", ">=", NULL
@@ -45,7 +46,7 @@ typedef struct
 }
 Ident;
 
-/* Open address hashing */
+/* open address hashing */
 typedef struct
 {
     Ident ident[MAX_MAP_IDENTS];
@@ -55,7 +56,7 @@ Map;
 
 typedef struct
 {
-    /* Defaults as l-value */
+    /* defaults as l-value */
     int right;
     int redirects;
 }
@@ -172,7 +173,7 @@ int IsFactOpChar(int c)
 int Read(FILE* in)
 {
     int c = fgetc(in);
-    /* Python style comments */
+    /* python style comments */
     if(c == '#')
         while(c != '\n')
             c = fgetc(in);
@@ -186,7 +187,7 @@ void Stream(FILE* in, int clause(int), String string)
     while(clause(c = Read(in)))
     {
         assert(i < MAX_STRING_CHARS);
-        /* No need to fill buffer with spaces */
+        /* do not fill white space buffers */
         string[clause == isspace ? 0 : i++] = c;
     }
     ungetc(c, in);
@@ -250,21 +251,22 @@ void Match(FILE* in, char* with)
 
 Value Expression(FILE* in, FILE* out, Map* idents);
 
-
 void Check(int l, int r)
 {
     assert(l == 0 ? r < 1 : r == l);
 }
 
-int Args(FILE* in, FILE* out, Map* idents, Ident* ident)
+void Get(FILE* out)
+{
+    fprintf(out, "\tGET(); /*get*/\n");
+}
+
+void Args(FILE* in, FILE* out, Map* idents, Ident* ident)
 {
     int args = 0;
     Match(in, "(");
     if(Peek(in) == ')')
-    {
         Match(in, ")");
-        return 0;
-    }
     else
     {
         while(1)
@@ -273,7 +275,7 @@ int Args(FILE* in, FILE* out, Map* idents, Ident* ident)
             assert(args < ident->params);
             r = Expression(in, out, idents);
             Check(ident->redirects, r.redirects);
-            if(r.redirects > -1)
+            if(!r.right)
                 Get(out);
             args += 1;
             if(Peek(in) == ',')
@@ -286,7 +288,6 @@ int Args(FILE* in, FILE* out, Map* idents, Ident* ident)
         }
         Match(in, ")");
     }
-    return args;
 }
 
 Value Identifier(FILE* in, FILE* out, Map* idents)
@@ -298,16 +299,19 @@ Value Identifier(FILE* in, FILE* out, Map* idents)
     ident = Find(idents, alnum);
     assert(ident);
     value.redirects = ident->redirects;
-    if(Peek(in) == '(')
+    if(Peek(in) == '(') /* function */
     {
-        int args;
         assert(ident->params >= 0);
         fprintf(out, "\tSET();\n");
-        args = Args(in, out, idents, ident);
+        Args(in, out, idents, ident);
         fprintf(out, "\tCAL(%s);\n", ident->name);
+        value.right = 1;
     }
     else
+    {
         fprintf(out, "\tREF(%d); /* %s */\n", ident->sp, ident->name);
+        value.right = 0;
+    }
     return value;
 }
 
@@ -341,9 +345,10 @@ Value Deref(FILE* in, FILE* out, Map* idents)
     Match(in, "*");
     value = Factor(in, out, idents);
     assert(value.redirects > 0);
+    if(!value.right)
+        Get(out);
     value.redirects -= 1;
     value.right = 0;
-    fprintf(out, "\tNOP(); /* is a NOP for deref okay? */\n");
     return value;
 }
 
@@ -356,7 +361,6 @@ Value Ref(FILE* in, FILE* out, Map* idents)
     assert(value.redirects >= 0);
     value.redirects += 1;
     value.right = 1;
-    fprintf(out, "\tNOP(); /* is a NOP for ref okay? */\n");
     return value;
 }
 
@@ -453,11 +457,6 @@ Value Factor(FILE* in, FILE* out, Map* idents)
         return Unary(in, out, idents);
 }
 
-void Get(FILE* out)
-{
-    fprintf(out, "\tGET();\n");
-}
-
 void Add(FILE* out)
 {
     fprintf(out, "\tADD();\n");
@@ -539,7 +538,11 @@ Value Term(FILE* in, FILE* out, Map* idents)
     Value l = Factor(in, out, idents);
     for(FactOp(in, op); IsFactOp(op); FactOp(in, op))
     {
+        if(!l.right)
+            Get(out);
         Value r = Factor(in, out, idents);
+        if(!r.right)
+            Get(out);
         if(l.redirects > 0)
             assert(r.redirects <= 0);
         if(r.redirects > 0)
@@ -569,20 +572,20 @@ Value Expression(FILE* in, FILE* out, Map* idents)
         {
             assert(l.right == 0);
             r = Expression(in, out, idents);
-            Check(l.redirects, r.redirects);
-            if(r.redirects > -1)
+            if(!r.right)
                 Get(out);
+            Check(l.redirects, r.redirects);
             Assign(out);
         }
         else
         if(IsStringIn(op, RelationalOps))
         {
-            if(l.redirects > -1)
+            if(!l.right)
                 Get(out);
             r = Expression(in, out, idents);
-            if(r.redirects > -1)
+            if(!r.right)
                 Get(out);
-
+            Check(l.redirects, r.redirects);
             if(Equal(op, "=="))
                 EqualTo(out);
             else
@@ -603,16 +606,15 @@ Value Expression(FILE* in, FILE* out, Map* idents)
         }
         else
         {
-            if(l.redirects > -1)
+            if(!l.right)
                 Get(out);
             r = Term(in, out, idents);
+            if(!r.right)
+                Get(out);
             if(l.redirects > 0)
                 assert(r.redirects <= 0);
             if(r.redirects > 0)
                 assert(l.redirects <= 0);
-            if(r.redirects > -1)
-                Get(out);
-
             if(Equal(op, "+"))
                 Add(out);
             else
@@ -698,12 +700,12 @@ void Array(FILE* in, FILE* out, Map* idents, Ident* array)
     {
         if(expressions == 1)
         {
-            /* Fill size with expression */
+            /* fill size with expression */
         }
         else
             assert(size == expressions);
     }
-    /* Arrays instantly promote to pointers */
+    /* arrays instantly promote to pointers */
     array->redirects += 1;
 }
 
@@ -717,10 +719,10 @@ void LetDef(FILE* in, FILE* out, Map* idents, Ident* ident)
         Value r;
         Match(in, "=");
         r = Expression(in, out, idents);
+        if(!r.right)
+            Get(out);
         Match(in, ";");
         Check(ident->redirects, r.redirects);
-        if(r.redirects > -1)
-            Get(out);
     }
     Insert(idents, ident);
 }
@@ -766,7 +768,9 @@ void If(FILE* in, FILE* out, Map* idents)
 
 void Ret(FILE* in, FILE* out, Map* idents)
 {
-    Expression(in, out, idents);
+    Value r = Expression(in, out, idents);
+    if(!r.right)
+        Get(out);
     fprintf(out, "\tRET();\n");
     Match(in, ";");
 }
@@ -878,38 +882,59 @@ void Func(FILE* in, FILE* out, Map* idents)
 void Header(FILE* out)
 {
     fprintf(out,
-        "#define MID() st[sp - 2]\n"
-        "#define TOP() st[sp - 1]\n"
-        "#define SET() sh[fp + 1] = sp\n"
-        "#define CAL(name) fn[fp++] = __LINE__; goto name; case __LINE__:\n"
-        "#define RET() if(fp == 0) return TOP(); else { pc = fn[--fp]; goto begin; }\n"
-        "#define REF(ref) st[sp++] = ref + sh[fp]\n"
-        "#define INT(var) st[sp++] = var\n"
-        "#define POP() --sp\n"
-        "#define GET() TOP() = st[TOP()]\n"
-        "#define ADD() MID() += TOP(); POP()\n"
-        "#define SUB() MID() -= TOP(); POP()\n"
-        "#define AND() MID() &= TOP(); POP()\n"
-        "#define XOR() MID() ^= TOP(); POP()\n"
-        "#define ORR() MID() |= TOP(); POP()\n"
-        "#define PRT() putchar(TOP());\n");
+        "#define SET()"
+            "bs[fp] = sp\n"
 
+        "#define CAL(name)"
+            "fs[fp] = __LINE__;"
+            "fp++;"
+            "goto name;"
+            "case __LINE__:\n"
+
+        "#define RET()"
+            /* main returns to shell */
+            "if(fp == 1)"
+                "return vs[sp - 1];"
+            /* otherwise, to the return register */
+            "rr = vs[sp - 1];"
+            "--fp;"
+            "sp = bs[fp];"
+            "fa = fs[fp];"
+            "vs[sp] = rr;"
+            /* functions always return values */
+            "sp++;"
+            "goto begin\n"
+        );
+    fprintf(out,
+        "#define REF(ref) vs[sp++] = ref + bs[fp - 1]\n"
+        "#define INT(var) vs[sp++] = var\n"
+        "#define PRT() putchar(vs[sp - 1])\n"
+        "#define GET() vs[sp - 1] = vs[vs[sp - 1]]\n"
+        "#define ADD() vs[sp - 2] += vs[sp - 1]; --sp\n"
+        "#define SUB() vs[sp - 2] -= vs[sp - 1]; --sp\n"
+        "#define AND() vs[sp - 2] &= vs[sp - 1]; --sp\n"
+        "#define XOR() vs[sp - 2] ^= vs[sp - 1]; --sp\n"
+        "#define ORR() vs[sp - 2] |= vs[sp - 1]; --sp\n"
+        "#define MOV() vs[vs[sp - 2]] = vs[sp - 1]; --sp\n"
+        "#define POP() --sp\n"
+        );
     fprintf(out,
         "int main(void)\n"
         "{\n"
-        "\tint fn[%d] = { 0 };\n"
-        "\tint sh[%d] = { 0 };\n"
-        "\tint st[%d] = { 0 };\n"
-        "\tint fp = 0;\n"
-        "\tint pc = 0;\n"
-        "\tint sp = 0;\n"
+        "\tint fs[%d] = { 0 };\n" /* function stack: top is prev function address */
+        "\tint bs[%d] = { 0 };\n" /* base pointer stack: top is prev stack pointer */
+        "\tint vs[%d] = { 0 };\n" /* variable stack */
+        "\tint fp = 1;\n" /* frame pointer */
+        "\tint fa = 0;\n" /* function address */
+        "\tint sp = 0;\n" /* stack pointer */
+        "\tint rr = 0;\n" /* return register */
         "\tgoto main;\n"
         "begin:\n"
-        "\tswitch(pc)\n"
+        "\tswitch(fa)\n"
         "\t{\n",
-            MAX_RUNTIME_FUNCTIONS,
-            MAX_RUNTIME_FUNCTIONS,
-            MAX_RUNTIME_VARIABLES);
+            RUNTIME_FUNCTION_STACK_SIZE,
+            RUNTIME_FUNCTION_STACK_SIZE,
+            RUNTIME_VARIABLE_STACK_SIZE);
 }
 
 void Footer(FILE* out)
