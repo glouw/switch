@@ -12,5 +12,12 @@ let factorial(let x)
 
 let main()
 {
-    ret factorial(5);
+    if(factorial(8) == 40320)
+    {
+        ret 0;
+    }
+    else
+    {
+        ret 1;
+    }
 }

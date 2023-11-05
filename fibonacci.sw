@@ -17,5 +17,12 @@ let fibonacci(let x)
 
 let main()
 {
-    ret fibonacci(13);
+    if(fibonacci(15) == 610)
+    {
+        ret 0;
+    }
+    else
+    {
+        ret 1;
+    }
 }

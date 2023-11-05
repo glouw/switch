@@ -391,7 +391,6 @@ Value Pos(FILE* in, FILE* out, Map* idents)
     Match(in, "+");
     value = Factor(in, out, idents);
     assert(value.redirects <= 0);
-    fprintf(out, "\tNOP();\n");
     return value;
 }
 
@@ -807,12 +806,18 @@ void Ret(FILE* in, FILE* out, Map* idents)
 
 void While(FILE* in, FILE* out, Map* idents)
 {
+    int l0 = idents->label++;
+    int lx = idents->label++;
+    fprintf(out, "L%d:\n", l0);
     Match(in, "(");
     Value r = Expression(in, out, idents);
+    fprintf(out, "\tBRZ(L%d);\n", lx);
     if(!r.right)
         Get(out);
     Match(in, ")");
     Block(in, out, idents);
+    fprintf(out, "\tBRA(L%d);\n", l0);
+    fprintf(out, "L%d:\n", lx);
 }
 
 void Block(FILE* in, FILE* out, Map* idents)
@@ -942,7 +947,7 @@ void Header(FILE* out)
         "#define INT(var) vs[sp++] = var\n"
         "#define MOV() vs[vs[sp - 2]] = vs[sp - 1]; --sp\n"
         "#define PRT() putchar(vs[sp - 1])\n"
-        "#define NOT() vs[sp - 1] = vs[sp - 1] == 0 ? 0 : 1\n"
+        "#define NOT() vs[sp - 1] = vs[sp - 1] = vs[sp - 1] == 0 ? 1 : 0\n"
         "#define FLP() vs[sp - 1] = ~vs[sp - 1]\n"
         "#define POS() vs[sp - 1] = +vs[sp - 1]\n"
         "#define NEG() vs[sp - 1] = -vs[sp - 1]\n"
@@ -955,12 +960,12 @@ void Header(FILE* out)
         "#define MUL() vs[sp - 2] = vs[sp - 2] *  vs[sp - 1]; --sp\n"
         "#define DIV() vs[sp - 2] = vs[sp - 2] /  vs[sp - 1]; --sp\n"
         "#define MOD() vs[sp - 2] = vs[sp - 2] %% vs[sp - 1]; --sp\n"
-        "#define EQT() vs[sp - 2] = vs[sp - 1] == vs[sp - 2]; --sp\n"
-        "#define NEQ() vs[sp - 2] = vs[sp - 1] != vs[sp - 2]; --sp\n"
-        "#define LTH() vs[sp - 2] = vs[sp - 1] <  vs[sp - 2]; --sp\n"
-        "#define GTH() vs[sp - 2] = vs[sp - 1] >  vs[sp - 2]; --sp\n"
-        "#define LTE() vs[sp - 2] = vs[sp - 1] <= vs[sp - 2]; --sp\n"
-        "#define GTE() vs[sp - 2] = vs[sp - 1] >= vs[sp - 2]; --sp\n"
+        "#define EQT() vs[sp - 2] = vs[sp - 2] == vs[sp - 1]; --sp\n"
+        "#define NEQ() vs[sp - 2] = vs[sp - 2] != vs[sp - 1]; --sp\n"
+        "#define LTH() vs[sp - 2] = vs[sp - 2] <  vs[sp - 1]; --sp\n"
+        "#define GTH() vs[sp - 2] = vs[sp - 2] >  vs[sp - 1]; --sp\n"
+        "#define LTE() vs[sp - 2] = vs[sp - 2] <= vs[sp - 1]; --sp\n"
+        "#define GTE() vs[sp - 2] = vs[sp - 2] >= vs[sp - 1]; --sp\n"
         "#define POP() --sp\n"
         "#define BRZ(label) if(vs[--sp] == 0) goto label\n"
         "#define BRA(label) goto label\n"
