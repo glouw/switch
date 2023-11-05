@@ -35,12 +35,21 @@ char* Reserved[] = {
 
 typedef char String[MAX_STRING_CHARS];
 
+typedef enum
+{
+    TYPE_ARR = -2,
+    TYPE_VAR = -1,
+    TYPE_FUN =  0
+}
+Type;
+
 typedef struct
 {
     String name;
     int redirects;
     int sp;
-    /* -1 for variables, 0 or more for functions */
+    int size;
+    /* -2 for arrays, -1 for variables, 0 or more for functions */
     int params;
     int param_redirects[MAX_FUNCTION_ARGS];
 }
@@ -247,7 +256,15 @@ void Match(FILE* in, char* with)
 {
     Space(in);
     while(*with)
-        assert(*with++ == Read(in));
+    {
+        int c = Read(in);
+        if(*with != c)
+        {
+            fprintf(stderr, "expected %c but got %c\n", *with, c);
+            exit(1);
+        }
+        with++;
+    }
 }
 
 Value Expression(FILE* in, FILE* out, Map* idents);
@@ -275,7 +292,7 @@ void Args(FILE* in, FILE* out, Map* idents, Ident* ident)
             Value r;
             assert(args < ident->params);
             r = Expression(in, out, idents);
-            Check(ident->redirects, r.redirects);
+            Check(ident->param_redirects[args], r.redirects);
             if(!r.right)
                 Get(out);
             args += 1;
@@ -306,13 +323,12 @@ Value Identifier(FILE* in, FILE* out, Map* idents)
         fprintf(out, "\tSET();\n");
         Args(in, out, idents, ident);
         fprintf(out, "\tCAL(%s);\n", ident->name);
-        value.right = 1;
     }
     else
-    {
         fprintf(out, "\tREF(%d); /* %s */\n", ident->sp, ident->name);
-        value.right = 0;
-    }
+    if(ident->params == TYPE_ARR) value.right = 1;
+    if(ident->params == TYPE_VAR) value.right = 0;
+    if(ident->params >= TYPE_FUN) value.right = 1;
     return value;
 }
 
@@ -550,9 +566,10 @@ Value Term(FILE* in, FILE* out, Map* idents)
     Value l = Factor(in, out, idents);
     for(FactOp(in, op); IsFactOp(op); FactOp(in, op))
     {
+        Value r;
         if(!l.right)
             Get(out);
-        Value r = Factor(in, out, idents);
+        r = Factor(in, out, idents);
         if(!r.right)
             Get(out);
         if(l.redirects > 0)
@@ -648,7 +665,15 @@ Value Expression(FILE* in, FILE* out, Map* idents)
     return l;
 }
 
-Ident LetDec(FILE* in, int local, Map* idents)
+void Typeify(Ident* ident, Type type)
+{
+    ident->params = type;
+    if(ident->params == TYPE_ARR) ident->size = 0;
+    if(ident->params == TYPE_VAR) ident->size = 1;
+    if(ident->params >= TYPE_FUN) ident->size = 1;
+}
+
+Ident Let(FILE* in, Map* idents, Type type)
 {
     char first;
     Ident ident = { 0 };
@@ -663,11 +688,8 @@ Ident LetDec(FILE* in, int local, Map* idents)
     Alnumu(in, ident.name);
     first = ident.name[0];
     assert(isalpha(first) || first == '_');
-    if(local)
-    {
-        ident.sp = idents->sp;
-        idents->sp += 1;
-    }
+    ident.sp = idents->sp;
+    Typeify(&ident, type);
     return ident;
 }
 
@@ -677,7 +699,7 @@ int End(FILE* in)
     return Peek(in) == EOF;
 }
 
-void Array(FILE* in, FILE* out, Map* idents, Ident* array)
+int Array(FILE* in, FILE* out, Map* idents, int redirects)
 {
     int expressions = 0;
     int size;
@@ -697,7 +719,7 @@ void Array(FILE* in, FILE* out, Map* idents, Ident* array)
         if(!r.right)
             Get(out);
         expressions += 1;
-        Check(array->redirects, r.redirects);
+        Check(redirects, r.redirects);
         if(Peek(in) == ',')
             Match(in, ",");
         else
@@ -719,26 +741,7 @@ void Array(FILE* in, FILE* out, Map* idents, Ident* array)
         else
             assert(size == expressions);
     }
-    /* arrays instantly promote to pointers */
-    array->redirects += 1;
-}
-
-void LetDef(FILE* in, FILE* out, Map* idents, Ident* ident)
-{
-    ident->params = -1;
-    if(Peek(in) == '[')
-        Array(in, out, idents, ident);
-    else
-    {
-        Value r;
-        Match(in, "=");
-        r = Expression(in, out, idents);
-        if(!r.right)
-            Get(out);
-        Match(in, ";");
-        Check(ident->redirects, r.redirects);
-    }
-    Insert(idents, ident);
+    return size;
 }
 
 void Rewind(FILE* in, char* string)
@@ -751,7 +754,7 @@ void Block(FILE* in, FILE* out, Map* idents);
 void If(FILE* in, FILE* out, Map* idents)
 {
     int l0 = idents->label++;
-    int lx = idents->label++; // abort label
+    int lx = idents->label++;
     Value r;
     Match(in, "(");
     r = Expression(in, out, idents);
@@ -806,11 +809,12 @@ void Ret(FILE* in, FILE* out, Map* idents)
 
 void While(FILE* in, FILE* out, Map* idents)
 {
+    Value r;
     int l0 = idents->label++;
     int lx = idents->label++;
     fprintf(out, "L%d:\n", l0);
     Match(in, "(");
-    Value r = Expression(in, out, idents);
+    r = Expression(in, out, idents);
     fprintf(out, "\tBRZ(L%d);\n", lx);
     if(!r.right)
         Get(out);
@@ -834,8 +838,27 @@ void Block(FILE* in, FILE* out, Map* idents)
         {
             Ident ident;
             Rewind(in, key);
-            ident = LetDec(in, 1, idents);
-            LetDef(in, out, idents, &ident);
+            /* assume variable */
+            ident = Let(in, idents, TYPE_VAR);
+            if(Peek(in) == '[')
+            {
+                /* but override with array if necessary */
+                Typeify(&ident, TYPE_ARR);
+                ident.size = Array(in, out, idents, ident.redirects);
+                ident.redirects += 1;
+            }
+            else
+            {
+                Value r;
+                Match(in, "=");
+                r = Expression(in, out, idents);
+                if(!r.right)
+                    Get(out);
+                Match(in, ";");
+                Check(ident.redirects, r.redirects);
+            }
+            idents->sp += ident.size;
+            Insert(idents, &ident);
             assert(count < MAX_SCOPE_LOCALS);
             strcpy(locals[count], ident.name);
             count += 1;
@@ -860,14 +883,15 @@ void Block(FILE* in, FILE* out, Map* idents)
     Match(in, "}");
     for(i = 0; i < count; i++)
     {
-        Delete(idents, locals[i]);
-        idents->sp -= 1;
+        Ident* found = Find(idents, locals[i]);
+        idents->sp -= found->size;
+        Delete(idents, found->name);
     }
 }
 
 Ident Params(FILE* in, Map* idents, String* names)
 {
-    Ident ident = LetDec(in, 0, idents);
+    Ident ident = Let(in, idents, TYPE_FUN);
     Match(in, "(");
     if(Peek(in) == ')')
     {
@@ -878,12 +902,13 @@ Ident Params(FILE* in, Map* idents, String* names)
     {
         while(1)
         {
-            Ident param = LetDec(in, 1, idents);
+            Ident param = Let(in, idents, TYPE_VAR);
             Insert(idents, &param);
             assert(ident.params < MAX_FUNCTION_ARGS);
             strcpy(names[ident.params], param.name);
             ident.param_redirects[ident.params] = param.redirects;
-            ident.params += 1;
+            ident.params += param.size;
+            idents->sp += param.size;
             if(Peek(in) == ',')
             {
                 Match(in, ",");
@@ -908,8 +933,9 @@ void Func(FILE* in, FILE* out, Map* idents)
     Block(in, out, idents);
     for(i = 0; i < ident.params; i++)
     {
-        Delete(idents, params[i]);
-        idents->sp -= 1;
+        Ident* found = Find(idents, params[i]);
+        idents->sp -= found->size;
+        Delete(idents, found->name);
     }
     assert(idents->sp == 0);
     fprintf(out, "\tINT(0);\n");
@@ -943,14 +969,21 @@ void Header(FILE* out)
 
     /* operators */
     fprintf(out,
+#ifdef CLEAN
+        /* cleaner output with gcc -E *.c for debugging */
+#else
+        "#include <stdio.h>\n"
+#endif
         "#define REF(ref) vs[sp++] = ref + bs[fp - 1]\n"
         "#define INT(var) vs[sp++] = var\n"
         "#define MOV() vs[vs[sp - 2]] = vs[sp - 1]; --sp\n"
         "#define PRT() putchar(vs[sp - 1])\n"
-        "#define NOT() vs[sp - 1] = vs[sp - 1] = vs[sp - 1] == 0 ? 1 : 0\n"
+        "#define NOT() vs[sp - 1] = vs[sp - 1] == 0 ? 1 : 0\n"
         "#define FLP() vs[sp - 1] = ~vs[sp - 1]\n"
         "#define POS() vs[sp - 1] = +vs[sp - 1]\n"
         "#define NEG() vs[sp - 1] = -vs[sp - 1]\n"
+    );
+    fprintf(out, /* there's an ansi-c string limit */
         "#define GET() vs[sp - 1] = vs[vs[sp - 1]]\n"
         "#define ADD() vs[sp - 2] = vs[sp - 2] +  vs[sp - 1]; --sp\n"
         "#define SUB() vs[sp - 2] = vs[sp - 2] -  vs[sp - 1]; --sp\n"
@@ -960,6 +993,8 @@ void Header(FILE* out)
         "#define MUL() vs[sp - 2] = vs[sp - 2] *  vs[sp - 1]; --sp\n"
         "#define DIV() vs[sp - 2] = vs[sp - 2] /  vs[sp - 1]; --sp\n"
         "#define MOD() vs[sp - 2] = vs[sp - 2] %% vs[sp - 1]; --sp\n"
+    );
+    fprintf(out,
         "#define EQT() vs[sp - 2] = vs[sp - 2] == vs[sp - 1]; --sp\n"
         "#define NEQ() vs[sp - 2] = vs[sp - 2] != vs[sp - 1]; --sp\n"
         "#define LTH() vs[sp - 2] = vs[sp - 2] <  vs[sp - 1]; --sp\n"
@@ -969,8 +1004,7 @@ void Header(FILE* out)
         "#define POP() --sp\n"
         "#define BRZ(label) if(vs[--sp] == 0) goto label\n"
         "#define BRA(label) goto label\n"
-        );
-
+    );
     /* entry */
     fprintf(out,
         "int main(void) {\n"
@@ -989,7 +1023,8 @@ void Header(FILE* out)
         "\t{\n",
             RUNTIME_FUNCTION_STACK_SIZE,
             RUNTIME_FUNCTION_STACK_SIZE,
-            RUNTIME_VARIABLE_STACK_SIZE);
+            RUNTIME_VARIABLE_STACK_SIZE
+    );
 }
 
 void Footer(FILE* out)
@@ -1007,9 +1042,16 @@ void Program(FILE* in, FILE* out, Map* idents)
 
 int main(int argc, char** argv)
 {
-    FILE* in = fopen(argv[1], "r");
-    FILE* out = fopen(argv[2], "w");
     Map idents = { 0 };
+    FILE* in;
+    FILE* out;
+    if(argc != 3)
+    {
+        puts("./switch in.sw, out.c");
+        exit(1);
+    }
+    in = fopen(argv[1], "r");
+    out = fopen(argv[2], "w");
     Program(in, out, &idents);
     fclose(in);
     fclose(out);
