@@ -1,4 +1,4 @@
-let fibbonacci(let x)
+let fibonacci(let x)
 {
     if(x == 0)
     {
@@ -10,12 +10,12 @@ let fibbonacci(let x)
     }
     else
     {
-        ret fibbonacci(x - 1)
-          + fibbonacci(x - 2);
+        ret fibonacci(x - 1)
+          + fibonacci(x - 2);
     }
 }
 
 let main()
 {
-    ret fibbonacci(13);
+    ret fibonacci(13);
 }
