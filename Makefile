@@ -13,13 +13,14 @@ CC = gcc
 SW = switch
 TEST = factorial fibonacci tests string putint qsort
 TEMP = $(TEST:=.c)
+ASM = $(TEST:=.asm)
 
 all: $(TEST)
 
 % : %.c
 	$(CC) $(CFLAGS) $(WFLAGS) $< -o $@
 	./$@
-	objdump -d $@ > $*.asm
+	objdump -d -M intel $@ > $*.asm
 	@echo -e ${GREEN}OKAY${RESET} $@
 
 %.c : %.sw $(SW)
@@ -32,6 +33,7 @@ clean:
 	rm -f $(SW)
 	rm -f $(TEST)
 	rm -f $(TEMP)
+	rm -f $(ASM)
 
 love:
 	@echo "and war"
