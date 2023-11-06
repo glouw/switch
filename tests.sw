@@ -214,15 +214,17 @@ int Array()
     if(*(a + 4) != 1) { ret 1; }
     if(*(a + 5) != 0) { ret 1; }
 
+    # Brace match size
     int b[3] = { 0, 1, 2 };
     if(*(b + 0) != 0) { ret 1; }
     if(*(b + 1) != 1) { ret 1; }
     if(*(b + 2) != 2) { ret 1; }
 
-    int c[3] = { 0 };
-    if(*(c + 0) != 0) { ret 1; }
-    if(*(c + 1) != 0) { ret 1; }
-    if(*(c + 2) != 0) { ret 1; }
+    # All same with one element
+    int c[3] = { 9 };
+    if(*(c + 0) != 9) { ret 1; }
+    if(*(c + 1) != 9) { ret 1; }
+    if(*(c + 2) != 9) { ret 1; }
 
     ret 0;
 }

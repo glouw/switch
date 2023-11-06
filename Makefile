@@ -1,9 +1,9 @@
 ASAN = 0
 
 ifeq ($(ASAN),1)
-CFLAGS = -Og -g -fsanitize=address -fsanitize=undefined
+CFLAGS = -g -fsanitize=address -fsanitize=undefined
 else
-CFLAGS = -O2 -mtune=native -march=native
+CFLAGS = -O3 -mtune=native -march=native
 endif
 
 WFLAGS = -ansi -pedantic -Wall -Wextra -W -Wpedantic -Wshadow
@@ -11,7 +11,7 @@ WFLAGS = -ansi -pedantic -Wall -Wextra -W -Wpedantic -Wshadow
 CC = gcc
 
 SW = switch
-TEST = factorial fibonacci tests string
+TEST = factorial fibonacci tests string putint qsort
 TEMP = $(TEST:=.c)
 
 all: $(TEST)
@@ -19,6 +19,7 @@ all: $(TEST)
 % : %.c
 	$(CC) $(CFLAGS) $(WFLAGS) $< -o $@
 	./$@
+	objdump -d $@ > $*.asm
 	@echo -e ${GREEN}OKAY${RESET} $@
 
 %.c : %.sw $(SW)
