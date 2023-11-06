@@ -1,34 +1,73 @@
-let puts(let *str)
+let strlen(let* s)
 {
-    let size = 0;
-    while(*str != 0)
+    let len = 0;
+    while(*s)
     {
-        let c = *str;
-        $c;
-        str = str + 1;
-        size = size + 1;
+        len = len + 1;
+        s = s + 1;
     }
-    ret size;
+    ret len;
+}
+
+let puts(let* s)
+{
+    while(*s)
+    {
+        let c = *s;
+        $ c;
+        s = s + 1;
+    }
+    $ '\n';
+}
+
+let streq(let* a, let* b)
+{
+    let x = strlen(a);
+    let y = strlen(b);
+    if(x == y)
+    {
+        let i = 0;
+        while(i < x)
+        {
+            if(*(a + i) != *(b + i))
+            {
+                ret 0;
+            }
+            i = i + 1;
+        }
+        ret 1;
+    }
+    ret 0;
 }
 
 let main()
 {
-    let A = 99; # padding check
-    let x[] = { 's','w','i','t','c','h',0 };
-    let B = 99; # padding check
-    if(*(x + 0) != 's') { ret 2; }
-    if(*(x + 1) != 'w') { ret 3; }
-    if(*(x + 2) != 'i') { ret 4; }
-    if(*(x + 3) != 't') { ret 5; }
-    if(*(x + 4) != 'c') { ret 6; }
-    if(*(x + 5) != 'h') { ret 7; }
-    if(*(x + 6) !=  0 ) { ret 8; }
-    if(puts(x) == 6)
-    {
-        ret 0;
-    }
-    else
+    let s[] = { 's','w','i','t','c','h','\0' };
+    let t[] = { 's','t','r','i','n','g','\0' };
+    if(strlen(s) != 6)
     {
         ret 1;
     }
+    if(*(s + 0) !=  's') { ret 2; }
+    if(*(s + 1) !=  'w') { ret 3; }
+    if(*(s + 2) !=  'i') { ret 4; }
+    if(*(s + 3) !=  't') { ret 5; }
+    if(*(s + 4) !=  'c') { ret 6; }
+    if(*(s + 5) !=  'h') { ret 7; }
+    if(*(s + 6) != '\0') { ret 8; }
+
+    # Just for show.
+    puts(s);
+
+    if(!streq(s, s))
+    {
+        ret 9;
+    }
+
+    if(streq(s, t))
+    {
+        ret 10;
+    }
+
+    ret 0;
 }

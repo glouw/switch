@@ -1,9 +1,9 @@
-ASAN = 1
+ASAN = 0
 
 ifeq ($(ASAN),1)
-CFLAGS = -Og -fsanitize=address -fsanitize=undefined
+CFLAGS = -Og -g -fsanitize=address -fsanitize=undefined
 else
-CFLAGS = -O3 -march=native
+CFLAGS = -O2 -mtune=native -march=native
 endif
 
 WFLAGS = -ansi -pedantic -Wall -Wextra -W -Wpedantic -Wshadow

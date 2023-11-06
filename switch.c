@@ -334,14 +334,19 @@ Value Identifier(FILE* in, FILE* out, Map* idents)
 
 Value Char(FILE* in, FILE* out)
 {
-    int c;
+    char ch[3] = { '\0' };
     Value value = { 1, -1 };
     Match(in, "'");
-    if(Peek(in) == '\\')
+    if(Peek(in) == '\\') /* escape chars */
+    {
         Match(in, "\\");
-    c = Read(in);
+        ch[0] = '\\';
+        ch[1] = Read(in);
+    }
+    else
+        ch[0] = Read(in);
     Match(in, "'");
-    fprintf(out, "\tINT('%c');\n", c);
+    fprintf(out, "\tINT('%s');\n", ch);
     return value;
 }
 
@@ -396,6 +401,8 @@ Value Neg(FILE* in, FILE* out, Map* idents)
     Match(in, "-");
     value = Factor(in, out, idents);
     assert(value.redirects <= 0);
+    if(!value.right)
+        Get(out);
     fprintf(out, "\tINT(-1);\n");
     fprintf(out, "\tMUL();\n");
     return value;
@@ -406,6 +413,8 @@ Value Pos(FILE* in, FILE* out, Map* idents)
     Value value;
     Match(in, "+");
     value = Factor(in, out, idents);
+    if(!value.right)
+        Get(out);
     assert(value.redirects <= 0);
     return value;
 }
@@ -416,6 +425,8 @@ Value Flp(FILE* in, FILE* out, Map* idents)
     Match(in, "~");
     value = Factor(in, out, idents);
     assert(value.redirects <= 0);
+    if(!value.right)
+        Get(out);
     fprintf(out, "\tFLP();\n");
     return value;
 }
@@ -425,6 +436,9 @@ Value Prt(FILE* in, FILE* out, Map* idents)
     Value value;
     Match(in, "$");
     value = Factor(in, out, idents);
+    printf(" >> right %d : red  %d\n", value.right, value.redirects);
+    if(!value.right)
+        Get(out);
     fprintf(out, "\tPRT();\n");
     return value;
 }
@@ -434,6 +448,8 @@ Value Not(FILE* in, FILE* out, Map* idents)
     Value value;
     Match(in, "!");
     value = Factor(in, out, idents);
+    if(!value.right)
+        Get(out);
     fprintf(out, "\tNOT();\n");
     return value;
 }
@@ -815,9 +831,9 @@ void While(FILE* in, FILE* out, Map* idents)
     fprintf(out, "L%d:\n", l0);
     Match(in, "(");
     r = Expression(in, out, idents);
-    fprintf(out, "\tBRZ(L%d);\n", lx);
     if(!r.right)
         Get(out);
+    fprintf(out, "\tBRZ(L%d);\n", lx);
     Match(in, ")");
     Block(in, out, idents);
     fprintf(out, "\tBRA(L%d);\n", l0);
@@ -886,6 +902,7 @@ void Block(FILE* in, FILE* out, Map* idents)
         Ident* found = Find(idents, locals[i]);
         idents->sp -= found->size;
         Delete(idents, found->name);
+        fprintf(out, "\tPOP();\n"); /* ??? */
     }
 }
 
@@ -936,6 +953,7 @@ void Func(FILE* in, FILE* out, Map* idents)
         Ident* found = Find(idents, params[i]);
         idents->sp -= found->size;
         Delete(idents, found->name);
+        fprintf(out, "\tPOP();\n"); /* ??? */
     }
     assert(idents->sp == 0);
     fprintf(out, "\tINT(0);\n");
@@ -1002,7 +1020,7 @@ void Header(FILE* out)
         "#define LTE() vs[sp - 2] = vs[sp - 2] <= vs[sp - 1]; --sp\n"
         "#define GTE() vs[sp - 2] = vs[sp - 2] >= vs[sp - 1]; --sp\n"
         "#define POP() --sp\n"
-        "#define BRZ(label) if(vs[--sp] == 0) goto label\n"
+        "#define BRZ(label) --sp; if(vs[sp] == 0) goto label\n"
         "#define BRA(label) goto label\n"
     );
     /* entry */
