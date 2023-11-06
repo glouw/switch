@@ -1,6 +1,6 @@
-let While()
+int While()
 {
-    let x = 10;
+    int x = 10;
     while(x > 0)
     {
         x = x - 1;
@@ -15,7 +15,7 @@ let While()
     }
 }
 
-let If()
+int If()
 {
     if(1)
     {
@@ -24,7 +24,7 @@ let If()
     ret 1;
 }
 
-let Elif()
+int Elif()
 {
     if(0)
     {
@@ -37,7 +37,7 @@ let Elif()
     ret 1;
 }
 
-let Else()
+int Else()
 {
     if(0)
     {
@@ -54,10 +54,10 @@ let Else()
     ret 1;
 }
 
-let OneStarPointer()
+int OneStarPointer()
 {
-    let x = 0;
-    let *p = &x;
+    int x = 0;
+    int *p = &x;
     *p = 42;
     if(x == 42)
     {
@@ -69,11 +69,11 @@ let OneStarPointer()
     }
 }
 
-let TwoStarPointer()
+int TwoStarPointer()
 {
-    let x = 0;
-    let *p = &x;
-    let **pp = &p;
+    int x = 0;
+    int *p = &x;
+    int **pp = &p;
     **pp = 42;
     if(x == 42)
     {
@@ -85,9 +85,33 @@ let TwoStarPointer()
     }
 }
 
-let Operators()
+int NStarPointer()
 {
-    let x = 0;
+    int a = 99;
+    int* b = &a;
+    int** c = &b;
+    int*** d = &c;
+    int**** e = &d;
+    int***** f = &e;
+    int****** g = &f;
+    int******* h = &g;
+    int******** i = &h;
+    int********* j = &i;
+    int********** k = &j;
+
+    if(**********k == 99)
+    {
+        ret 0;
+    }
+    else
+    {
+        ret 1;
+    }
+}
+
+int Operators()
+{
+    int x = 0;
     x = 9;
     if(x != 9)
     {
@@ -164,35 +188,83 @@ let Operators()
     ret 0;
 }
 
-let main()
+int Array()
 {
-    if(While() != 0)
+    int a[] = { 0, 1, 2, 3, 4, 5 };
+
+    # Read.
+    if(*(a + 0) != 0) { ret 1; }
+    if(*(a + 1) != 1) { ret 1; }
+    if(*(a + 2) != 2) { ret 1; }
+    if(*(a + 3) != 3) { ret 1; }
+    if(*(a + 4) != 4) { ret 1; }
+    if(*(a + 5) != 5) { ret 1; }
+
+    # Write
+    *(a + 0) = 5;
+    *(a + 1) = 4;
+    *(a + 2) = 3;
+    *(a + 3) = 2;
+    *(a + 4) = 1;
+    *(a + 5) = 0;
+    if(*(a + 0) != 5) { ret 1; }
+    if(*(a + 1) != 4) { ret 1; }
+    if(*(a + 2) != 3) { ret 1; }
+    if(*(a + 3) != 2) { ret 1; }
+    if(*(a + 4) != 1) { ret 1; }
+    if(*(a + 5) != 0) { ret 1; }
+
+    int b[3] = { 0, 1, 2 };
+    if(*(b + 0) != 0) { ret 1; }
+    if(*(b + 1) != 1) { ret 1; }
+    if(*(b + 2) != 2) { ret 1; }
+
+    int c[3] = { 0 };
+    if(*(c + 0) != 0) { ret 1; }
+    if(*(c + 1) != 0) { ret 1; }
+    if(*(c + 2) != 0) { ret 1; }
+
+    ret 0;
+}
+
+int Assign()
+{
+    int x = 0;
+    x = 99;
+    if(x != 99)
     {
         ret 1;
     }
-    if(If() != 0)
+    else
     {
-        ret 2;
+        ret 0;
     }
-    if(Elif() != 0)
-    {
-        ret 3;
-    }
-    if(Else() != 0)
-    {
-        ret 4;
-    }
-    if(OneStarPointer() != 0)
-    {
-        ret 5;
-    }
-    if(TwoStarPointer() != 0)
-    {
-        ret 6;
-    }
-    if(Operators() != 0)
-    {
-        ret 7;
-    }
+}
+
+int LinkedAssign()
+{
+    int x = 0;
+    int y = 0;
+    int z = 0;
+    x = y = z = 99;
+    if(x != 99) { ret 1; }
+    if(y != 99) { ret 1; }
+    if(z != 99) { ret 1; }
+    ret 0;
+}
+
+int main()
+{
+    if(While() != 0)          { ret  1; }
+    if(If() != 0)             { ret  2; }
+    if(Elif() != 0)           { ret  3; }
+    if(Else() != 0)           { ret  4; }
+    if(OneStarPointer() != 0) { ret  5; }
+    if(TwoStarPointer() != 0) { ret  6; }
+    if(NStarPointer() != 0)   { ret  7; }
+    if(Operators() != 0)      { ret  8; }
+    if(Array() != 0)          { ret  9; }
+    if(Assign() != 0)         { ret 10; }
+    if(LinkedAssign() != 0)   { ret 11; }
     ret 0;
 }

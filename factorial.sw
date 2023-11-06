@@ -1,4 +1,4 @@
-let factorial(let x)
+int factorial(int x)
 {
     if(x == 0)
     {
@@ -10,7 +10,7 @@ let factorial(let x)
     }
 }
 
-let main()
+int main()
 {
     if(factorial(8) == 40320)
     {

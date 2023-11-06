@@ -1,6 +1,6 @@
-let strlen(let* s)
+int strlen(int* s)
 {
-    let len = 0;
+    int len = 0;
     while(*s)
     {
         len = len + 1;
@@ -9,24 +9,24 @@ let strlen(let* s)
     ret len;
 }
 
-let puts(let* s)
+int puts(int* s)
 {
     while(*s)
     {
-        let c = *s;
+        int c = *s;
         $ c;
         s = s + 1;
     }
     $ '\n';
 }
 
-let streq(let* a, let* b)
+int streq(int* a, int* b)
 {
-    let x = strlen(a);
-    let y = strlen(b);
+    int x = strlen(a);
+    int y = strlen(b);
     if(x == y)
     {
-        let i = 0;
+        int i = 0;
         while(i < x)
         {
             if(*(a + i) != *(b + i))
@@ -40,34 +40,22 @@ let streq(let* a, let* b)
     ret 0;
 }
 
-let main()
+int main()
 {
-    let s[] = { 's','w','i','t','c','h','\0' };
-    let t[] = { 's','t','r','i','n','g','\0' };
+    int s[] = { 's','w','i','t','c','h','\0' };
+    int t[] = { 's','t','r','i','n','g','\0' };
     if(strlen(s) != 6)
     {
         ret 1;
     }
-    if(*(s + 0) !=  's') { ret 2; }
-    if(*(s + 1) !=  'w') { ret 3; }
-    if(*(s + 2) !=  'i') { ret 4; }
-    if(*(s + 3) !=  't') { ret 5; }
-    if(*(s + 4) !=  'c') { ret 6; }
-    if(*(s + 5) !=  'h') { ret 7; }
-    if(*(s + 6) != '\0') { ret 8; }
-
-    # Just for show.
-    puts(s);
-
     if(!streq(s, s))
     {
-        ret 9;
+        ret 2;
     }
-
     if(streq(s, t))
     {
-        ret 10;
+        ret 3;
     }
-
+    puts(s);
     ret 0;
 }

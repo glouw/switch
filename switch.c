@@ -2,11 +2,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+#include <stdarg.h>
 #include <stdio.h>
 
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 #define MAX_MAP_IDENTS (512)
-#define MAX_FUNCTION_ARGS (8)
+#define MAX_FUNCTION_PARAMS (8)
 #define MAX_STRING_CHARS (64)
 #define MAX_SCOPE_LOCALS (64)
 
@@ -30,7 +31,7 @@ char* UnaryOps[] = {
 };
 
 char* Reserved[] = {
-    "let", "while", "if", "elif", "else", "ret", NULL
+    "int", "while", "if", "elif", "else", "ret", NULL
 };
 
 typedef char String[MAX_STRING_CHARS];
@@ -39,19 +40,22 @@ typedef enum
 {
     TYPE_ARR = -2,
     TYPE_VAR = -1,
-    TYPE_FUN =  0
+    /* 0 or more, where the value implies the number of function params */
+    TYPE_FUN = 0
 }
 Type;
 
 typedef struct
 {
     String name;
+    /* -1 for direct values, 0 for variables, 1 or more for pointers */
     int redirects;
     int sp;
+    /* 1, otherwise N for arrays */
     int size;
-    /* -2 for arrays, -1 for variables, 0 or more for functions */
+    /* 0 or more imply identifier is function */
     int params;
-    int param_redirects[MAX_FUNCTION_ARGS];
+    int param_redirects[MAX_FUNCTION_PARAMS];
 }
 Ident;
 
@@ -72,28 +76,20 @@ typedef struct
 }
 Value;
 
+void Quit(const char* format, ...)
+{
+    va_list list;
+    va_start(list, format);
+    fprintf(stderr, "error: ");
+    vfprintf(stderr, format, list);
+    fprintf(stderr, "\n");
+    va_end(list);
+    exit(1);
+}
+
 int Equal(char* a, char* b)
 {
     return strcmp(a, b) == 0;
-}
-
-unsigned Hash(char* string)
-{
-    unsigned h = 0;
-    unsigned char* p;
-    for(p = (unsigned char*) string; *p; p++)
-        h = 31 * h + *p;
-    return h;
-}
-
-int Index(char* string)
-{
-    return Hash(string) % MAX_MAP_IDENTS;
-}
-
-int Next(int index)
-{
-    return (index + 1) % MAX_MAP_IDENTS;
 }
 
 int IsStringIn(char* string, char* strings[])
@@ -116,11 +112,32 @@ int IsCharIn(int c, char* strings[])
     return 0;
 }
 
+/* generic */
+unsigned Hash(char* string)
+{
+    unsigned h = 0;
+    unsigned char* p;
+    for(p = (unsigned char*) string; *p; p++)
+        h = 31 * h + *p;
+    return h;
+}
+
+int Index(char* string)
+{
+    return Hash(string) % MAX_MAP_IDENTS;
+}
+
+int Next(int index)
+{
+    return (index + 1) % MAX_MAP_IDENTS;
+}
+
 Ident* Find(Map* idents, char* name)
 {
     int i;
     int index;
-    assert(!IsStringIn(name, Reserved));
+    if(IsStringIn(name, Reserved))
+        Quit("%s is a reserved keyword", name);
     index = Index(name);
     for(i = 0; i < MAX_MAP_IDENTS; i++)
     {
@@ -137,7 +154,8 @@ void Insert(Map* idents, Ident* ident)
     int i;
     int index;
     Ident* found = Find(idents, ident->name);
-    assert(!found);
+    if(found)
+        Quit("%s already defined", found->name);
     index = Index(ident->name);
     for(i = 0; i < MAX_MAP_IDENTS; i++)
     {
@@ -196,12 +214,14 @@ void Stream(FILE* in, int clause(int), String string)
     char c;
     while(clause(c = Read(in)))
     {
-        assert(i < MAX_STRING_CHARS);
-        /* do not fill white space buffers */
+        if(i >= MAX_STRING_CHARS)
+            Quit("max string size %d exceeded", MAX_STRING_CHARS);
+        /* will not fill white space buffers */
         string[clause == isspace ? 0 : i++] = c;
     }
     ungetc(c, in);
-    assert(i < MAX_STRING_CHARS);
+    if(i >= MAX_STRING_CHARS)
+        Quit("max string size %d exceeded", MAX_STRING_CHARS);
     string[i] = '\0';
 }
 
@@ -259,24 +279,44 @@ void Match(FILE* in, char* with)
     {
         int c = Read(in);
         if(*with != c)
-        {
-            fprintf(stderr, "expected %c but got %c\n", *with, c);
-            exit(1);
-        }
-        with++;
+            Quit("expected %c but got %c", *with, c);
+        with += 1;
     }
 }
 
 Value Expression(FILE* in, FILE* out, Map* idents);
 
-void Check(int l, int r)
+void AssignCheck(int l, int r)
 {
-    assert(l == 0 ? r < 1 : r == l);
+    if(l == 0)
+    {
+        if(r > l)
+            Quit("pointers cannot be assigned to variables");
+    }
+    else
+    {
+        if(l != r)
+            Quit("pointer redirection level must match");
+    }
 }
 
-void Get(FILE* out)
+void OpCheck(int l, int r)
 {
-    fprintf(out, "\tGET(); /*get*/\n");
+    if(l > 0 && r > 0)
+    {
+        if(l != r)
+            Quit("pointer redirection level must match");
+    }
+}
+
+Value Rval(FILE* out, Value value)
+{
+    if(value.right == 0)
+    {
+        fprintf(out, "\tRVL();\n");
+        value.right = 1;
+    }
+    return value;
 }
 
 void Args(FILE* in, FILE* out, Map* idents, Ident* ident)
@@ -290,11 +330,10 @@ void Args(FILE* in, FILE* out, Map* idents, Ident* ident)
         while(1)
         {
             Value r;
-            assert(args < ident->params);
-            r = Expression(in, out, idents);
-            Check(ident->param_redirects[args], r.redirects);
-            if(!r.right)
-                Get(out);
+            if(args >= ident->params)
+                Quit("%s(...) param count of %d exceeded", ident->name, ident->params);
+            r = Rval(out, Expression(in, out, idents));
+            OpCheck(ident->param_redirects[args], r.redirects);
             args += 1;
             if(Peek(in) == ',')
             {
@@ -315,11 +354,13 @@ Value Identifier(FILE* in, FILE* out, Map* idents)
     Ident* ident;
     Alnumu(in, alnum);
     ident = Find(idents, alnum);
-    assert(ident);
+    if(ident == NULL)
+        Quit("%s not defined", alnum);
     value.redirects = ident->redirects;
     if(Peek(in) == '(') /* function */
     {
-        assert(ident->params >= 0);
+        if(ident->params < TYPE_FUN)
+            Quit("expected %s to be a function", ident->name);
         fprintf(out, "\tSET();\n");
         Args(in, out, idents, ident);
         fprintf(out, "\tCAL(%s);\n", ident->name);
@@ -365,10 +406,9 @@ Value Deref(FILE* in, FILE* out, Map* idents)
 {
     Value value;
     Match(in, "*");
-    value = Factor(in, out, idents);
-    assert(value.redirects > 0);
-    if(!value.right)
-        Get(out);
+    value = Rval(out, Factor(in, out, idents));
+    if(value.redirects <= 0)
+        Quit("could not dereference");
     value.redirects -= 1;
     value.right = 0;
     return value;
@@ -379,8 +419,8 @@ Value Ref(FILE* in, FILE* out, Map* idents)
     Value value;
     Match(in, "&");
     value = Factor(in, out, idents);
-    assert(value.right == 0);
-    assert(value.redirects >= 0);
+    if(value.right != 0)
+        Quit("expected lvalue");
     value.redirects += 1;
     value.right = 1;
     return value;
@@ -399,10 +439,9 @@ Value Neg(FILE* in, FILE* out, Map* idents)
 {
     Value value;
     Match(in, "-");
-    value = Factor(in, out, idents);
-    assert(value.redirects <= 0);
-    if(!value.right)
-        Get(out);
+    value = Rval(out, Factor(in, out, idents));
+    if(value.redirects > 0)
+        Quit("pointer arithmetic not allowed");
     fprintf(out, "\tINT(-1);\n");
     fprintf(out, "\tMUL();\n");
     return value;
@@ -410,23 +449,17 @@ Value Neg(FILE* in, FILE* out, Map* idents)
 
 Value Pos(FILE* in, FILE* out, Map* idents)
 {
-    Value value;
     Match(in, "+");
-    value = Factor(in, out, idents);
-    if(!value.right)
-        Get(out);
-    assert(value.redirects <= 0);
-    return value;
+    return Rval(out, Factor(in, out, idents));
 }
 
 Value Flp(FILE* in, FILE* out, Map* idents)
 {
     Value value;
     Match(in, "~");
-    value = Factor(in, out, idents);
-    assert(value.redirects <= 0);
-    if(!value.right)
-        Get(out);
+    value = Rval(out, Factor(in, out, idents));
+    if(value.redirects > 0)
+        Quit("pointer arithmetic not allowed");
     fprintf(out, "\tFLP();\n");
     return value;
 }
@@ -435,10 +468,7 @@ Value Prt(FILE* in, FILE* out, Map* idents)
 {
     Value value;
     Match(in, "$");
-    value = Factor(in, out, idents);
-    printf(" >> right %d : red  %d\n", value.right, value.redirects);
-    if(!value.right)
-        Get(out);
+    value = Rval(out, Factor(in, out, idents));
     fprintf(out, "\tPRT();\n");
     return value;
 }
@@ -447,9 +477,7 @@ Value Not(FILE* in, FILE* out, Map* idents)
 {
     Value value;
     Match(in, "!");
-    value = Factor(in, out, idents);
-    if(!value.right)
-        Get(out);
+    value = Rval(out, Factor(in, out, idents));
     fprintf(out, "\tNOT();\n");
     return value;
 }
@@ -458,7 +486,8 @@ Value Unary(FILE* in, FILE* out, Map* idents)
 {
     Value none = { 0 };
     int c = Peek(in);
-    assert(IsCharIn(c, UnaryOps));
+    if(!IsCharIn(c, UnaryOps))
+        Quit("%c is not a supported unary operator", c);
     if(c == '$')
         return Prt(in, out, idents);
     else
@@ -482,7 +511,6 @@ Value Unary(FILE* in, FILE* out, Map* idents)
     else
     if(c == '(')
         return Paren(in, out, idents);
-    assert(1 && "uncaught unary operator");
     return none;
 }
 
@@ -501,81 +529,6 @@ Value Factor(FILE* in, FILE* out, Map* idents)
         return Unary(in, out, idents);
 }
 
-void Add(FILE* out)
-{
-    fprintf(out, "\tADD();\n");
-}
-
-void Sub(FILE* out)
-{
-    fprintf(out, "\tSUB();\n");
-}
-
-void And(FILE* out)
-{
-    fprintf(out, "\tAND();\n");
-}
-
-void Xor(FILE* out)
-{
-    fprintf(out, "\tXOR();\n");
-}
-
-void Or(FILE* out)
-{
-    fprintf(out, "\tORR();\n");
-}
-
-void Mul(FILE* out)
-{
-    fprintf(out, "\tMUL();\n");
-}
-
-void Div(FILE* out)
-{
-    fprintf(out, "\tDIV();\n");
-}
-
-void Mod(FILE* out)
-{
-    fprintf(out, "\tMOD();\n");
-}
-
-void Assign(FILE* out)
-{
-    fprintf(out, "\tMOV();\n");
-}
-
-void EqualTo(FILE* out)
-{
-    fprintf(out, "\tEQT();\n");
-}
-
-void NotEqualTo(FILE* out)
-{
-    fprintf(out, "\tNEQ();\n");
-}
-
-void LessThan(FILE* out)
-{
-    fprintf(out, "\tLTH();\n");
-}
-
-void GreaterThan(FILE* out)
-{
-    fprintf(out, "\tGTH();\n");
-}
-
-void LessThanOrEqualTo(FILE* out)
-{
-    fprintf(out, "\tLTE();\n");
-}
-
-void GreaterThanOrEqualTo(FILE* out)
-{
-    fprintf(out, "\tGTE();\n");
-}
-
 Value Term(FILE* in, FILE* out, Map* idents)
 {
     String op;
@@ -583,23 +536,17 @@ Value Term(FILE* in, FILE* out, Map* idents)
     for(FactOp(in, op); IsFactOp(op); FactOp(in, op))
     {
         Value r;
-        if(!l.right)
-            Get(out);
-        r = Factor(in, out, idents);
-        if(!r.right)
-            Get(out);
-        if(l.redirects > 0)
-            assert(r.redirects <= 0);
-        if(r.redirects > 0)
-            assert(l.redirects <= 0);
+        l = Rval(out, l);
+        r = Rval(out, Factor(in, out, idents));
+        OpCheck(l.redirects, r.redirects);
         if(Equal(op, "*"))
-            Mul(out);
+            fprintf(out, "\tMUL();\n");
         else
         if(Equal(op, "%"))
-            Mod(out);
+            fprintf(out, "\tMOD();\n");
         else
         if(Equal(op, "/"))
-            Div(out);
+            fprintf(out, "\tDIV();\n");
         l.redirects = MAX(l.redirects, r.redirects);
         l.right = 1;
     }
@@ -615,65 +562,58 @@ Value Expression(FILE* in, FILE* out, Map* idents)
     {
         if(Equal(op, "="))
         {
-            assert(l.right == 0);
-            r = Expression(in, out, idents);
-            if(!r.right)
-                Get(out);
-            Check(l.redirects, r.redirects);
-            Assign(out);
+            /* remain as lvalue for left side */
+            if(l.right == 1)
+                Quit("expected lvalue");
+            /* rvalue moves into lvalue */
+            r = Rval(out, Expression(in, out, idents));
+            AssignCheck(l.redirects, r.redirects);
+            fprintf(out, "\tMOV();\n");
+            fprintf(out, "\tDRP();\n");
         }
         else
         if(IsStringIn(op, RelationalOps))
         {
-            if(!l.right)
-                Get(out);
-            r = Expression(in, out, idents);
-            if(!r.right)
-                Get(out);
-            Check(l.redirects, r.redirects);
+            l = Rval(out, l);
+            r = Rval(out, Expression(in, out, idents));
+            OpCheck(l.redirects, r.redirects);
             if(Equal(op, "=="))
-                EqualTo(out);
+                fprintf(out, "\tEQT();\n");
             else
             if(Equal(op, "!="))
-                NotEqualTo(out);
+                fprintf(out, "\tNEQ();\n");
             else
             if(Equal(op, "<"))
-                LessThan(out);
+                fprintf(out, "\tLTH();\n");
             else
             if(Equal(op, ">"))
-                GreaterThan(out);
+                fprintf(out, "\tGTH();\n");
             else
             if(Equal(op, "<="))
-                LessThanOrEqualTo(out);
+                fprintf(out, "\tLTE();\n");
             else
             if(Equal(op, ">="))
-                GreaterThanOrEqualTo(out);
+                fprintf(out, "\tGTE();\n");
         }
         else
         {
-            if(!l.right)
-                Get(out);
-            r = Term(in, out, idents);
-            if(!r.right)
-                Get(out);
-            if(l.redirects > 0)
-                assert(r.redirects <= 0);
-            if(r.redirects > 0)
-                assert(l.redirects <= 0);
+            l = Rval(out, l);
+            r = Rval(out, Term(in, out, idents));
+            OpCheck(l.redirects, r.redirects);
             if(Equal(op, "+"))
-                Add(out);
+                fprintf(out, "\tADD();\n");
             else
             if(Equal(op, "-"))
-                Sub(out);
+                fprintf(out, "\tSUB();\n");
             else
             if(Equal(op, "&"))
-                And(out);
+                fprintf(out, "\tAND();\n");
             else
             if(Equal(op, "^"))
-                Xor(out);
+                fprintf(out, "\tXOR();\n");
             else
             if(Equal(op, "|"))
-                Or(out);
+                fprintf(out, "\tORR();\n");
         }
         l.redirects = MAX(l.redirects, r.redirects);
         l.right = 1;
@@ -689,13 +629,14 @@ void Typeify(Ident* ident, Type type)
     if(ident->params >= TYPE_FUN) ident->size = 1;
 }
 
-Ident Let(FILE* in, Map* idents, Type type)
+Ident Int(FILE* in, Map* idents, Type type)
 {
     char first;
     Ident ident = { 0 };
-    String let;
-    Alpha(in, let);
-    assert(Equal(let, "let"));
+    String decl;
+    Alpha(in, decl);
+    if(!Equal(decl, "int"))
+        Quit("only type int is supported");
     while(Peek(in) == '*')
     {
         Match(in, "*");
@@ -703,7 +644,8 @@ Ident Let(FILE* in, Map* idents, Type type)
     }
     Alnumu(in, ident.name);
     first = ident.name[0];
-    assert(isalpha(first) || first == '_');
+    if(!isalpha(first) && first != '_')
+        Quit("%s must start with letter or underscore", ident.name);
     ident.sp = idents->sp;
     Typeify(&ident, type);
     return ident;
@@ -715,7 +657,7 @@ int End(FILE* in)
     return Peek(in) == EOF;
 }
 
-int Array(FILE* in, FILE* out, Map* idents, int redirects)
+int Array(FILE* in, FILE* out, Map* idents, Ident* ident)
 {
     int expressions = 0;
     int size;
@@ -731,11 +673,9 @@ int Array(FILE* in, FILE* out, Map* idents, int redirects)
         Value r;
         if(Peek(in) == '}')
             break;
-        r = Expression(in, out, idents);
-        if(!r.right)
-            Get(out);
+        r = Rval(out, Expression(in, out, idents));
         expressions += 1;
-        Check(redirects, r.redirects);
+        AssignCheck(ident->redirects, r.redirects);
         if(Peek(in) == ',')
             Match(in, ",");
         else
@@ -745,17 +685,21 @@ int Array(FILE* in, FILE* out, Map* idents, int redirects)
     Match(in, ";");
     if(size == 0)
     {
-        assert(expressions > 0);
+        if(expressions == 0)
+            Quit("empty brace for array %s", ident->name);
         size = expressions;
     }
     else
     {
         if(expressions == 1)
         {
-            /* fill size with expression */
+            int i;
+            for(i = expressions; i < size; i++)
+                fprintf(out, "\tDUP();\n");
         }
         else
-            assert(size == expressions);
+        if(size != expressions)
+            Quit("brace size of %d does not match array %s size of %d", expressions, ident->name, size);
     }
     return size;
 }
@@ -771,11 +715,8 @@ void If(FILE* in, FILE* out, Map* idents)
 {
     int l0 = idents->label++;
     int lx = idents->label++;
-    Value r;
     Match(in, "(");
-    r = Expression(in, out, idents);
-    if(!r.right)
-        Get(out);
+    Rval(out, Expression(in, out, idents));
     Match(in, ")");
     fprintf(out, "\tBRZ(L%d);\n", l0);
     Block(in, out, idents);
@@ -789,9 +730,7 @@ void If(FILE* in, FILE* out, Map* idents)
         {
             int l1 = idents->label++;
             Match(in, "(");
-            r = Expression(in, out, idents);
-            if(!r.right)
-                Get(out);
+            Rval(out, Expression(in, out, idents));
             Match(in, ")");
             fprintf(out, "\tBRZ(L%d);\n", l1);
             Block(in, out, idents);
@@ -816,23 +755,18 @@ void If(FILE* in, FILE* out, Map* idents)
 
 void Ret(FILE* in, FILE* out, Map* idents)
 {
-    Value r = Expression(in, out, idents);
-    if(!r.right)
-        Get(out);
+    Rval(out, Expression(in, out, idents));
     fprintf(out, "\tRET();\n");
     Match(in, ";");
 }
 
 void While(FILE* in, FILE* out, Map* idents)
 {
-    Value r;
     int l0 = idents->label++;
     int lx = idents->label++;
     fprintf(out, "L%d:\n", l0);
     Match(in, "(");
-    r = Expression(in, out, idents);
-    if(!r.right)
-        Get(out);
+    Rval(out, Expression(in, out, idents));
     fprintf(out, "\tBRZ(L%d);\n", lx);
     Match(in, ")");
     Block(in, out, idents);
@@ -850,32 +784,31 @@ void Block(FILE* in, FILE* out, Map* idents)
     {
         String key = { 0 };
         Alpha(in, key);
-        if(Equal(key, "let"))
+        if(Equal(key, "int"))
         {
             Ident ident;
             Rewind(in, key);
             /* assume variable */
-            ident = Let(in, idents, TYPE_VAR);
+            ident = Int(in, idents, TYPE_VAR);
             if(Peek(in) == '[')
             {
                 /* but override with array if necessary */
                 Typeify(&ident, TYPE_ARR);
-                ident.size = Array(in, out, idents, ident.redirects);
+                ident.size = Array(in, out, idents, &ident);
                 ident.redirects += 1;
             }
             else
             {
                 Value r;
                 Match(in, "=");
-                r = Expression(in, out, idents);
-                if(!r.right)
-                    Get(out);
+                r = Rval(out, Expression(in, out, idents));
                 Match(in, ";");
-                Check(ident.redirects, r.redirects);
+                AssignCheck(ident.redirects, r.redirects);
             }
             idents->sp += ident.size;
             Insert(idents, &ident);
-            assert(count < MAX_SCOPE_LOCALS);
+            if(count >= MAX_SCOPE_LOCALS)
+                Quit("max scope local count of %d has been reached", MAX_SCOPE_LOCALS);
             strcpy(locals[count], ident.name);
             count += 1;
         }
@@ -902,13 +835,13 @@ void Block(FILE* in, FILE* out, Map* idents)
         Ident* found = Find(idents, locals[i]);
         idents->sp -= found->size;
         Delete(idents, found->name);
-        fprintf(out, "\tPOP();\n"); /* ??? */
+        fprintf(out, "\tPOP();\n");
     }
 }
 
 Ident Params(FILE* in, Map* idents, String* names)
 {
-    Ident ident = Let(in, idents, TYPE_FUN);
+    Ident ident = Int(in, idents, TYPE_FUN);
     Match(in, "(");
     if(Peek(in) == ')')
     {
@@ -919,9 +852,10 @@ Ident Params(FILE* in, Map* idents, String* names)
     {
         while(1)
         {
-            Ident param = Let(in, idents, TYPE_VAR);
+            Ident param = Int(in, idents, TYPE_VAR);
             Insert(idents, &param);
-            assert(ident.params < MAX_FUNCTION_ARGS);
+            if(ident.params >= MAX_FUNCTION_PARAMS)
+                Quit("exceeded %s param count of %d", ident.name, ident.params);
             strcpy(names[ident.params], param.name);
             ident.param_redirects[ident.params] = param.redirects;
             ident.params += param.size;
@@ -943,7 +877,7 @@ Ident Params(FILE* in, Map* idents, String* names)
 void Func(FILE* in, FILE* out, Map* idents)
 {
     int i = 0;
-    String params[MAX_FUNCTION_ARGS];
+    String params[MAX_FUNCTION_PARAMS];
     Ident ident = Params(in, idents, params);
     fprintf(out, "%s:\n", ident.name);
     Insert(idents, &ident);
@@ -953,17 +887,24 @@ void Func(FILE* in, FILE* out, Map* idents)
         Ident* found = Find(idents, params[i]);
         idents->sp -= found->size;
         Delete(idents, found->name);
-        fprintf(out, "\tPOP();\n"); /* ??? */
+        fprintf(out, "\tPOP();\n");
     }
-    assert(idents->sp == 0);
+    if(idents->sp != 0)
+        Quit("internal : Func() : idents->sp = %d", idents->sp);
     fprintf(out, "\tINT(0);\n");
     fprintf(out, "\tRET();\n");
 }
 
 void Header(FILE* out)
 {
+    /* stdlib standard headers for generic io */
+    fprintf(out,
+        "int putchar(int c);\n"
+    );
     /* call stack setup, calling, and returning */
     fprintf(out,
+        "#define POP() --sp\n"
+
         "#define SET()"
             "bs[fp] = sp\n"
 
@@ -980,38 +921,41 @@ void Header(FILE* out)
             "sp = bs[fp];"
             "fa = fs[fp];"
             "vs[sp] = rr;"
-            /* functions always return values */
+            /* functions always return vars of size 1 */
             "sp++;"
             "goto begin\n"
         );
 
-    /* operators */
+    /* direct / indirect loads */
     fprintf(out,
-#ifdef CLEAN
-        /* cleaner output with gcc -E *.c for debugging */
-#else
-        "#include <stdio.h>\n"
-#endif
         "#define REF(ref) vs[sp++] = ref + bs[fp - 1]\n"
+        "#define DRP() vs[sp - 2] = vs[sp - 1]; --sp;\n"
+        "#define MOV() vs[vs[sp - 2]] = vs[sp - 1];\n"
+        "#define RVL() vs[sp - 1] = vs[vs[sp - 1]]\n"
+        "#define DUP() sp++; vs[sp - 1] = vs[sp - 2];\n"
+        /* int is the only type! */
         "#define INT(var) vs[sp++] = var\n"
-        "#define MOV() vs[vs[sp - 2]] = vs[sp - 1]; --sp\n"
+    );
+    /* unary operators */
+    fprintf(out,
         "#define PRT() putchar(vs[sp - 1])\n"
         "#define NOT() vs[sp - 1] = vs[sp - 1] == 0 ? 1 : 0\n"
         "#define FLP() vs[sp - 1] = ~vs[sp - 1]\n"
         "#define POS() vs[sp - 1] = +vs[sp - 1]\n"
         "#define NEG() vs[sp - 1] = -vs[sp - 1]\n"
     );
-    fprintf(out, /* there's an ansi-c string limit */
-        "#define GET() vs[sp - 1] = vs[vs[sp - 1]]\n"
-        "#define ADD() vs[sp - 2] = vs[sp - 2] +  vs[sp - 1]; --sp\n"
-        "#define SUB() vs[sp - 2] = vs[sp - 2] -  vs[sp - 1]; --sp\n"
-        "#define AND() vs[sp - 2] = vs[sp - 2] &  vs[sp - 1]; --sp\n"
-        "#define XOR() vs[sp - 2] = vs[sp - 2] ^  vs[sp - 1]; --sp\n"
-        "#define ORR() vs[sp - 2] = vs[sp - 2] |  vs[sp - 1]; --sp\n"
-        "#define MUL() vs[sp - 2] = vs[sp - 2] *  vs[sp - 1]; --sp\n"
-        "#define DIV() vs[sp - 2] = vs[sp - 2] /  vs[sp - 1]; --sp\n"
-        "#define MOD() vs[sp - 2] = vs[sp - 2] %% vs[sp - 1]; --sp\n"
+    /* term and factor operators */
+    fprintf(out,
+        "#define ADD() vs[sp - 2]  += vs[sp - 1]; --sp\n"
+        "#define SUB() vs[sp - 2]  -= vs[sp - 1]; --sp\n"
+        "#define AND() vs[sp - 2]  &= vs[sp - 1]; --sp\n"
+        "#define XOR() vs[sp - 2]  ^= vs[sp - 1]; --sp\n"
+        "#define ORR() vs[sp - 2]  |= vs[sp - 1]; --sp\n"
+        "#define MUL() vs[sp - 2]  *= vs[sp - 1]; --sp\n"
+        "#define DIV() vs[sp - 2]  /= vs[sp - 1]; --sp\n"
+        "#define MOD() vs[sp - 2] %%= vs[sp - 1]; --sp\n"
     );
+    /* relational operators */
     fprintf(out,
         "#define EQT() vs[sp - 2] = vs[sp - 2] == vs[sp - 1]; --sp\n"
         "#define NEQ() vs[sp - 2] = vs[sp - 2] != vs[sp - 1]; --sp\n"
@@ -1019,20 +963,22 @@ void Header(FILE* out)
         "#define GTH() vs[sp - 2] = vs[sp - 2] >  vs[sp - 1]; --sp\n"
         "#define LTE() vs[sp - 2] = vs[sp - 2] <= vs[sp - 1]; --sp\n"
         "#define GTE() vs[sp - 2] = vs[sp - 2] >= vs[sp - 1]; --sp\n"
-        "#define POP() --sp\n"
-        "#define BRZ(label) --sp; if(vs[sp] == 0) goto label\n"
+    );
+    /* branching */
+    fprintf(out,
+        "#define BRZ(label) if(vs[--sp] == 0) goto label\n"
         "#define BRA(label) goto label\n"
     );
-    /* entry */
+    /* entry + stack + register setup */
     fprintf(out,
         "int main(void) {\n"
         "\tint fs[%d] = { 0 };\n" /* function stack: top is prev function address */
         "\tint bs[%d] = { 0 };\n" /* base pointer stack: top is prev stack pointer */
         "\tint vs[%d] = { 0 };\n" /* variable stack */
-        "\tint fp = 1;\n" /* frame pointer */
-        "\tint fa = 0;\n" /* function address */
-        "\tint sp = 0;\n" /* stack pointer */
-        "\tint rr = 0;\n" /* return register */
+        "\tregister int fp = 1;\n" /* frame pointer */
+        "\tregister int fa = 0;\n" /* function address */
+        "\tregister int sp = 0;\n" /* stack pointer */
+        "\tregister int rr = 0;\n" /* return register */
         "\tgoto main;\n"
         "begin:\n"
         "\tif(fp == 0)\n"

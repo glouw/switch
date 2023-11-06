@@ -1,4 +1,4 @@
-let fibonacci(let x)
+int fibonacci(int x)
 {
     if(x == 0)
     {
@@ -10,12 +10,11 @@ let fibonacci(let x)
     }
     else
     {
-        ret fibonacci(x - 1)
-          + fibonacci(x - 2);
+        ret fibonacci(x - 1) + fibonacci(x - 2);
     }
 }
 
-let main()
+int main()
 {
     if(fibonacci(15) == 610)
     {
