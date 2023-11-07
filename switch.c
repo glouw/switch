@@ -6,13 +6,12 @@
 #include <stdio.h>
 
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
-#define MAX_MAP_IDENTS (512)
+#define MAX_MAP_IDENTS (1024)
 #define MAX_FUNCTION_PARAMS (8)
 #define MAX_STRING_CHARS (64)
 #define MAX_SCOPE_LOCALS (64)
-
 #define RUNTIME_VARIABLE_STACK_SIZE (65536)
-#define RUNTIME_FUNCTION_STACK_SIZE (512)
+#define RUNTIME_FUNCTION_STACK_SIZE (4096)
 
 char* RelationalOps[] = {
     "==", "!=", "<", ">", "<=", ">=", NULL
@@ -27,7 +26,7 @@ char* FactOps[] = {
 };
 
 char* UnaryOps[] = {
-    "!", "$", "~", "+", "-", "&", "*", "(", NULL
+    "@", "!", "$", "~", "+", "-", "&", "*", "(", NULL
 };
 
 char* Reserved[] = {
@@ -40,7 +39,7 @@ typedef enum
 {
     TYPE_ARR = -2,
     TYPE_VAR = -1,
-    /* 0 or more, where the value implies the number of function params */
+    /* 0 or more, where the integral value implies number of function params */
     TYPE_FUN = 0
 }
 Type;
@@ -50,16 +49,18 @@ typedef struct
     String name;
     /* -1 for direct values, 0 for variables, 1 or more for pointers */
     int redirects;
+    /* stack pointer */
     int sp;
     /* 1, otherwise N for arrays */
     int size;
-    /* 0 or more imply identifier is function */
+    /* 0 or more implies identifier is function - see Type above */
     int params;
+    /* granted ident is a function, param_redirects will be used for caller type checking */
     int param_redirects[MAX_FUNCTION_PARAMS];
 }
 Ident;
 
-/* open address hashing */
+/* idents stored with open address hashing */
 typedef struct
 {
     Ident ident[MAX_MAP_IDENTS];
@@ -68,11 +69,12 @@ typedef struct
 }
 Map;
 
+/* values default as l-values */
 typedef struct
 {
-    /* defaults as l-value */
     int right;
     int redirects;
+    int size;
 }
 Value;
 
@@ -112,7 +114,7 @@ int IsCharIn(int c, char* strings[])
     return 0;
 }
 
-/* generic */
+/* map - generic hashing */
 unsigned Hash(char* string)
 {
     unsigned h = 0;
@@ -122,11 +124,11 @@ unsigned Hash(char* string)
     return h;
 }
 
+/* map - generic open address linear probing */
 int Index(char* string)
 {
     return Hash(string) % MAX_MAP_IDENTS;
 }
-
 int Next(int index)
 {
     return (index + 1) % MAX_MAP_IDENTS;
@@ -149,6 +151,7 @@ Ident* Find(Map* idents, char* name)
     return NULL;
 }
 
+/* map - reserved keywords cannot be inserted */
 void Insert(Map* idents, Ident* ident)
 {
     int i;
@@ -208,6 +211,7 @@ int Read(FILE* in)
     return c;
 }
 
+/* read a string based on clause - see definitions below */
 void Stream(FILE* in, int clause(int), String string)
 {
     int i = 0;
@@ -243,18 +247,18 @@ void Alpha(FILE* in, String string)
     Stream(in, isalpha, string);
 }
 
+/* alphanumeric and underscores */
 int isalnumu(int c)
 {
     return isalnum(c) || c == '_';
 }
-
 void Alnumu(FILE* in, String string)
 {
     Space(in);
     Stream(in, isalnumu, string);
 }
 
-void Digit(FILE* in, String string)
+void Digits(FILE* in, String string)
 {
     Space(in);
     Stream(in, isdigit, string);
@@ -286,6 +290,7 @@ void Match(FILE* in, char* with)
 
 Value Expression(FILE* in, FILE* out, Map* idents);
 
+/* where <l> and <r> are redirection levels */
 void AssignCheck(int l, int r)
 {
     if(l == 0)
@@ -309,6 +314,7 @@ void OpCheck(int l, int r)
     }
 }
 
+/* converts stack values (defaulted as lvalues) into rvalues */
 Value Rval(FILE* out, Value value)
 {
     if(value.right == 0)
@@ -319,6 +325,7 @@ Value Rval(FILE* out, Value value)
     return value;
 }
 
+/* (<expression>, ...) */
 void Args(FILE* in, FILE* out, Map* idents, Ident* ident)
 {
     int args = 0;
@@ -347,6 +354,7 @@ void Args(FILE* in, FILE* out, Map* idents, Ident* ident)
     }
 }
 
+/* <ident> := <function> | <variable> | <array> */
 Value Identifier(FILE* in, FILE* out, Map* idents)
 {
     Value value = { 0 };
@@ -356,6 +364,7 @@ Value Identifier(FILE* in, FILE* out, Map* idents)
     ident = Find(idents, alnum);
     if(ident == NULL)
         Quit("%s not defined", alnum);
+    value.size = ident->size;
     value.redirects = ident->redirects;
     if(Peek(in) == '(') /* function */
     {
@@ -365,18 +374,19 @@ Value Identifier(FILE* in, FILE* out, Map* idents)
         Args(in, out, idents, ident);
         fprintf(out, "\tCAL(%s);\n", ident->name);
     }
-    else
+    else /* ident ref */
         fprintf(out, "\tREF(%d); /* %s */\n", ident->sp, ident->name);
-    if(ident->params == TYPE_ARR) value.right = 1;
-    if(ident->params == TYPE_VAR) value.right = 0;
-    if(ident->params >= TYPE_FUN) value.right = 1;
+    if(ident->params == TYPE_ARR) value.right = 1; /* rvalue */
+    if(ident->params == TYPE_VAR) value.right = 0; /* lvalue */
+    if(ident->params >= TYPE_FUN) value.right = 1; /* rvalue */
     return value;
 }
 
+/* <char> := `a` */
 Value Char(FILE* in, FILE* out)
 {
     char ch[3] = { '\0' };
-    Value value = { 1, -1 };
+    Value value = { 1, -1, 1 }; /* rvalue */
     Match(in, "'");
     if(Peek(in) == '\\') /* escape chars */
     {
@@ -391,17 +401,19 @@ Value Char(FILE* in, FILE* out)
     return value;
 }
 
+/* <number|digits> := 42 */
 Value Number(FILE* in, FILE* out)
 {
     String number;
-    Value value = { 1, -1 };
-    Digit(in, number);
+    Value value = { 1, -1, 1 }; /* rvalue */
+    Digits(in, number);
     fprintf(out, "\tINT(%s);\n", number);
     return value;
 }
 
 Value Factor(FILE* in, FILE* out, Map* idents);
 
+/* turning into rvalue also dereferences */
 Value Deref(FILE* in, FILE* out, Map* idents)
 {
     Value value;
@@ -414,6 +426,7 @@ Value Deref(FILE* in, FILE* out, Map* idents)
     return value;
 }
 
+/* lvalues are references */
 Value Ref(FILE* in, FILE* out, Map* idents)
 {
     Value value;
@@ -426,6 +439,7 @@ Value Ref(FILE* in, FILE* out, Map* idents)
     return value;
 }
 
+/* (<expression>) */
 Value Paren(FILE* in, FILE* out, Map* idents)
 {
     Value value;
@@ -435,6 +449,7 @@ Value Paren(FILE* in, FILE* out, Map* idents)
     return value;
 }
 
+/* -<factor> */
 Value Neg(FILE* in, FILE* out, Map* idents)
 {
     Value value;
@@ -447,12 +462,25 @@ Value Neg(FILE* in, FILE* out, Map* idents)
     return value;
 }
 
+/* @<ident> */
+Value Len(FILE* in, FILE* out, Map* idents)
+{
+    Value value;
+    Match(in, "@");
+    value = Rval(out, Identifier(in, out, idents));
+    fprintf(out, "\tPOP();\n");
+    fprintf(out, "\tINT(%d);\n", value.size);
+    return value;
+}
+
+/* +<factor> */
 Value Pos(FILE* in, FILE* out, Map* idents)
 {
     Match(in, "+");
     return Rval(out, Factor(in, out, idents));
 }
 
+/* ~<factor> */
 Value Flp(FILE* in, FILE* out, Map* idents)
 {
     Value value;
@@ -464,6 +492,7 @@ Value Flp(FILE* in, FILE* out, Map* idents)
     return value;
 }
 
+/* '$' calls libc putchar() */
 Value Prt(FILE* in, FILE* out, Map* idents)
 {
     Value value;
@@ -473,6 +502,7 @@ Value Prt(FILE* in, FILE* out, Map* idents)
     return value;
 }
 
+/* !<factor> */
 Value Not(FILE* in, FILE* out, Map* idents)
 {
     Value value;
@@ -490,6 +520,9 @@ Value Unary(FILE* in, FILE* out, Map* idents)
         Quit("%c is not a supported unary operator", c);
     if(c == '$')
         return Prt(in, out, idents);
+    else
+    if(c == '@')
+        return Len(in, out, idents);
     else
     if(c == '!')
         return Not(in, out, idents);
@@ -514,6 +547,7 @@ Value Unary(FILE* in, FILE* out, Map* idents)
     return none;
 }
 
+/* <factor> := <char> | <number> | <ident> | <unary> */
 Value Factor(FILE* in, FILE* out, Map* idents)
 {
     int c = Peek(in);
@@ -529,6 +563,7 @@ Value Factor(FILE* in, FILE* out, Map* idents)
         return Unary(in, out, idents);
 }
 
+/* <term> := <factor> <factop> <factor> <factop> ... */
 Value Term(FILE* in, FILE* out, Map* idents)
 {
     String op;
@@ -553,6 +588,7 @@ Value Term(FILE* in, FILE* out, Map* idents)
     return l;
 }
 
+/* <expression> := <term> <termop> <term> <termop> ... */
 Value Expression(FILE* in, FILE* out, Map* idents)
 {
     String op;
@@ -569,6 +605,11 @@ Value Expression(FILE* in, FILE* out, Map* idents)
             r = Rval(out, Expression(in, out, idents));
             AssignCheck(l.redirects, r.redirects);
             fprintf(out, "\tMOV();\n");
+            /* the drp() opcode will allow for linked assignment, like:
+             * int x = 0;
+             * int y = 0;
+             * int z = 0;
+             * x = y = z = 42; */
             fprintf(out, "\tDRP();\n");
         }
         else
@@ -624,11 +665,12 @@ Value Expression(FILE* in, FILE* out, Map* idents)
 void Typeify(Ident* ident, Type type)
 {
     ident->params = type;
-    if(ident->params == TYPE_ARR) ident->size = 0;
+    if(ident->params == TYPE_ARR) ident->size = 0; /* to be overwritten once size is known */
     if(ident->params == TYPE_VAR) ident->size = 1;
-    if(ident->params >= TYPE_FUN) ident->size = 1;
+    if(ident->params >= TYPE_FUN) ident->size = 1; /* operator >= doubles as parameter count */
 }
 
+/* int<pointers> <ident> */
 Ident Int(FILE* in, Map* idents, Type type)
 {
     char first;
@@ -651,20 +693,15 @@ Ident Int(FILE* in, Map* idents, Type type)
     return ident;
 }
 
-int End(FILE* in)
-{
-    Space(in);
-    return Peek(in) == EOF;
-}
-
+/* int <ident>[<digits>] = { <expression>, ... }; */
 int Array(FILE* in, FILE* out, Map* idents, Ident* ident)
 {
     int expressions = 0;
     int size;
-    String digit;
+    String digits;
     Match(in, "[");
-    Digit(in, digit);
-    size = atoi(digit);
+    Digits(in, digits);
+    size = atoi(digits);
     Match(in, "]");
     Match(in, "=");
     Match(in, "{");
@@ -691,6 +728,10 @@ int Array(FILE* in, FILE* out, Map* idents, Ident* ident)
     }
     else
     {
+        /* for when all elements must equal the zeroth element:
+         * int arr[<digits>] = { <expression> };
+         * eg. int arr[512] = { 5 + 2 };
+         * */
         if(expressions == 1)
         {
             int i;
@@ -711,6 +752,7 @@ void Rewind(FILE* in, char* string)
 
 void Block(FILE* in, FILE* out, Map* idents);
 
+/* if (<expression>) <block> elif (<expression>) <block> else <block> */
 void If(FILE* in, FILE* out, Map* idents)
 {
     int l0 = idents->label++;
@@ -753,6 +795,7 @@ void If(FILE* in, FILE* out, Map* idents)
     fprintf(out, "L%d:\n", lx);
 }
 
+/* ret <expression>; */
 void Ret(FILE* in, FILE* out, Map* idents)
 {
     Rval(out, Expression(in, out, idents));
@@ -760,6 +803,7 @@ void Ret(FILE* in, FILE* out, Map* idents)
     Match(in, ";");
 }
 
+/* while(<expression>) <block> */
 void While(FILE* in, FILE* out, Map* idents)
 {
     int l0 = idents->label++;
@@ -774,6 +818,7 @@ void While(FILE* in, FILE* out, Map* idents)
     fprintf(out, "L%d:\n", lx);
 }
 
+/* { <int> | <if> | <while> | <ret> } */
 void Block(FILE* in, FILE* out, Map* idents)
 {
     int i;
@@ -788,7 +833,7 @@ void Block(FILE* in, FILE* out, Map* idents)
         {
             Ident ident;
             Rewind(in, key);
-            /* assume variable */
+            /* assume type is variable */
             ident = Int(in, idents, TYPE_VAR);
             if(Peek(in) == '[')
             {
@@ -830,6 +875,7 @@ void Block(FILE* in, FILE* out, Map* idents)
         }
     }
     Match(in, "}");
+    /* clean up stack */
     for(i = 0; i < count; i++)
     {
         Ident* found = Find(idents, locals[i]);
@@ -839,6 +885,7 @@ void Block(FILE* in, FILE* out, Map* idents)
     }
 }
 
+/* (int<pointers> <ident>, ...) */
 Ident Params(FILE* in, Map* idents, String* names)
 {
     Ident ident = Int(in, idents, TYPE_FUN);
@@ -874,6 +921,7 @@ Ident Params(FILE* in, Map* idents, String* names)
     }
 }
 
+/* int<pointers><ident><params><block> */
 void Func(FILE* in, FILE* out, Map* idents)
 {
     int i = 0;
@@ -882,6 +930,7 @@ void Func(FILE* in, FILE* out, Map* idents)
     fprintf(out, "%s:\n", ident.name);
     Insert(idents, &ident);
     Block(in, out, idents);
+    /* cleanup parameters */
     for(i = 0; i < ident.params; i++)
     {
         Ident* found = Find(idents, params[i]);
@@ -915,7 +964,7 @@ void Header(FILE* out)
             "case __LINE__:\n"
 
         "#define RET()"
-            /* otherwise, to the return register */
+            /* returns stored temp in return register */
             "rr = vs[sp - 1];"
             "--fp;"
             "sp = bs[fp];"
@@ -972,13 +1021,14 @@ void Header(FILE* out)
     /* entry + stack + register setup */
     fprintf(out,
         "int main(void) {\n"
-        "\tint fs[%d] = { 0 };\n" /* function stack: top is prev function address */
-        "\tint bs[%d] = { 0 };\n" /* base pointer stack: top is prev stack pointer */
-        "\tint vs[%d] = { 0 };\n" /* variable stack */
+        "\tint fs[%d] = { 0 };\n"  /* function stack: top is prev function address */
+        "\tint bs[%d] = { 0 };\n"  /* base pointer stack: top is prev stack pointer */
+        "\tint vs[%d] = { 0 };\n"  /* variable stack */
         "\tregister int fp = 1;\n" /* frame pointer */
         "\tregister int fa = 0;\n" /* function address */
         "\tregister int sp = 0;\n" /* stack pointer */
         "\tregister int rr = 0;\n" /* return register */
+        /* note: the register keyword could be useless, but it looks really cool */
         "\tgoto main;\n"
         "begin:\n"
         "\tif(fp == 0)\n"
@@ -994,6 +1044,12 @@ void Header(FILE* out)
 void Footer(FILE* out)
 {
     fprintf(out, "\t}\n\treturn 0;\n}");
+}
+
+int End(FILE* in)
+{
+    Space(in);
+    return Peek(in) == EOF;
 }
 
 void Program(FILE* in, FILE* out, Map* idents)

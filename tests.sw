@@ -98,7 +98,6 @@ int NStarPointer()
     int******** i = &h;
     int********* j = &i;
     int********** k = &j;
-
     if(**********k == 99)
     {
         ret 0;
@@ -182,6 +181,15 @@ int Operators()
         ret 1;
     }
     if((1 >= 1) != 1)
+    {
+        ret 1;
+    }
+    int arr[512] = { 0 };
+    if(@arr != 512)
+    {
+        ret 1;
+    }
+    if(@x != 1)
     {
         ret 1;
     }

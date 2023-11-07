@@ -11,7 +11,7 @@ WFLAGS = -ansi -pedantic -Wall -Wextra -W -Wpedantic -Wshadow
 CC = gcc
 
 SW = switch
-TEST = factorial fibonacci tests string putint qsort
+TEST = tests examples
 TEMP = $(TEST:=.c)
 ASM = $(TEST:=.asm)
 
