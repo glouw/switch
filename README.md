@@ -3,13 +3,13 @@
 Switch is an experiment in using ANSI C to target ANSI C switch statements and gotos.
 
 ## Structure
-`switch.c`: A recursive descent compiler which parses switch (.sw) files.
-The language of a switch file is reminiscent to the B programming language where
+`switch.c` A recursive descent compiler which parses switch `.sw` files.
+The language of a switch file is reminiscent to the B Programming Language where
 `int` (and pointers thereto) are the only types.
 
-`examples.sw`: Various examples exemplifying Switch as a language.
+`examples.sw` Various examples exemplifying Switch as a language.
 
-`tests.sw`: Unit tests, tests operators and basic expressions and statements.
+`tests.sw` Unit tests, tests operators, and basic expressions and statements.
 
 ## Use
 
